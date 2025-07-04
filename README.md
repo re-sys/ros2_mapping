@@ -157,3 +157,47 @@ alias
 ```bash
 unalias lidar
 ``` 
+
+## 依赖环境一键安装推荐
+
+### 1. 使用rosdep自动安装依赖
+
+在工作空间根目录下执行：
+```bash
+sudo apt install python3-rosdep
+sudo rosdep init
+rosdep update
+rosdep install --from-paths src --ignore-src -r -y
+```
+这样可以自动安装所有ROS包依赖，避免手动遗漏。
+
+### 2. 鱼香ROS一键安装脚本（推荐新环境快速部署）
+
+[官方GitHub仓库](https://github.com/fishros/install)
+
+一键安装命令：
+```bash
+source <(wget -qO- http://fishros.com/install)
+```
+该脚本支持一键安装ROS1/ROS2、VSCode、rosdep等常用开发环境。
+
+---
+
+## LiDAR IP 配置说明
+
+请在如下文件中修改 LiDAR 的 IP 地址：
+
+- `livox_ros_driver2/config/MID360_config.json`
+  ```json
+  {
+    ...
+    "lidar_configs" : [
+      {
+        "ip" : "192.168.1.197",   // ← 这里修改为你的雷达IP
+        ...
+      }
+    ]
+  }
+  ```
+
+--- 
