@@ -138,4 +138,28 @@ ros2 topic echo /livox/imu
 
 ---
 
-*如有问题，请查看 `README_DEBUG.md` 获取详细调试信息。* 
+*如有问题，请查看 `README_DEBUG.md` 获取详细调试信息。*
+
+## ⚙️ 高级配置
+
+### LiDAR频率调节
+
+LiDAR的发布频率可以在驱动launch文件中调节：
+
+```bash
+nano livox_ros_driver2/launch/mid360_msg.launch.py
+```
+
+修改第8行的 `publish_freq` 参数：
+```python
+publish_freq  = 10.0 # 可选: 5.0, 10.0, 20.0, 50.0, 100.0 Hz
+```
+
+**频率选项说明：**
+- `5.0 Hz`: 低频率，适合低功耗场景
+- `10.0 Hz`: 标准频率，平衡性能和功耗
+- `20.0 Hz`: 中高频率，适合一般应用
+- `50.0 Hz`: 高频率，适合高精度SLAM（推荐）
+- `100.0 Hz`: 最高频率，适合实时应用
+
+**注意：** 修改频率后需要重新构建工作空间：`cb` 
