@@ -41,6 +41,15 @@ Thumbs.db
 
 # Log files
 *.log
+Log/
+logs/
+**/Log/
+**/logs/
+**/*.log
+**/*.txt
+!README*.txt
+!*.md
+!*.txt.md
 
 # Compiled Object files
 *.slo
