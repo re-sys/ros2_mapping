@@ -1,203 +1,141 @@
 # ROS2 Mapping System with MID360 LiDAR
 
-This is a configured ROS2 Humble workspace for mapping using Livox MID360 LiDAR and Point-LIO.
+基于ROS2 Humble的Livox MID360激光雷达建图系统，集成Point-LIO算法。
 
-## Quick Start with Aliases
+## 🚀 Quick Start
 
-### 1. Setup Aliases (One-time setup)
+### 1. 一键配置（推荐）
+
+运行一键配置脚本，自动完成所有环境配置：
+
 ```bash
-# Add these aliases to your ~/.bashrc for permanent use
-echo 'alias lidar="ros2 launch livox_ros_driver2 mid360_msg.launch.py"' >> ~/.bashrc
-echo 'alias lidar-rviz="ros2 launch livox_ros_driver2 mid360_rviz.launch.py"' >> ~/.bashrc
-echo 'alias pointlio="ros2 launch point_lio point_lio.launch.py"' >> ~/.bashrc
-echo 'alias cb="colcon build --symlink-install --parallel-workers 8"' >> ~/.bashrc
-echo 'alias rlib="rm -rf build log install"' >> ~/.bashrc
-echo 'alias source-ros="source ~/ros2_ws/install/setup.bash"' >> ~/.bashrc
-
-# Reload bashrc to apply changes
-source ~/.bashrc
+cd ~/ros2_ws/src/ros2_mapping
+./scripts/setup_ros2_mapping.sh
 ```
 
-### 2. Quick Commands
+该脚本会自动：
+- 配置快捷命令别名
+- 安装ROS依赖
+- 构建工作空间
+- 配置环境变量
+
+### 2. 配置LiDAR IP
+
+编辑配置文件，将IP最后两位改为雷达序列号的最后两位：
+
 ```bash
-# Start LiDAR driver
+nano livox_ros_driver2/config/MID360_config.json
+```
+
+修改以下部分：
+```json
+{
+  "lidar_configs" : [
+    {
+      "ip" : "192.168.1.1**",   // ← 改为雷达序列号最后两位
+      ...
+    }
+  ]
+}
+```
+
+### 3. 启动系统
+
+```bash
+# 启动LiDAR驱动
 lidar
 
-# Start LiDAR with RViz visualization
-lidar-rviz
-
-# Start Point-LIO mapping
+# 启动Point-LIO建图（新终端）
 pointlio
-
-# Build workspace
-cb
-
-# Clean build cache
-rlib
-
-# Source ROS2 workspace
-source-ros
 ```
 
-## Manual Setup (Alternative)
+## 📋 系统配置
 
-### Hardware Configuration
+### 硬件配置
 - **LiDAR**: Livox MID360
 - **Host IP**: 192.168.1.50
-- **LiDAR IP**: 192.168.1.197
-- **Frequency**: 50.0 Hz (maximum)
-- **Data Format**: CustomMsg (optimized for Point-LIO)
+- **LiDAR IP**: 192.168.1.1** (根据序列号配置)
+- **频率**: 50.0 Hz
+- **数据格式**: CustomMsg
 
-### Software Configuration
-- **ROS2 Version**: Humble
-- **Driver**: livox_ros_driver2 (ROS2 only)
-- **SLAM**: Point-LIO
-- **Message Type**: `livox_ros_driver2::msg::CustomMsg`
+### 软件配置
+- **ROS2版本**: Humble
+- **驱动**: livox_ros_driver2
+- **SLAM算法**: Point-LIO
+- **消息类型**: `livox_ros_driver2::msg::CustomMsg`
 
-## Build Instructions
+## 🛠️ 快捷命令
 
-1. Make sure you have ROS2 Humble installed
-2. Install dependencies:
-   ```bash
-   sudo apt install ros-humble-pcl-ros ros-humble-pcl-conversions
-   ```
-3. Build the workspace:
-   ```bash
-   cd ~/ros2_ws
-   colcon build
-   source install/setup.bash
-   ```
+配置完成后，可使用以下快捷命令：
 
-## Usage
+| 命令 | 功能 |
+|------|------|
+| `lidar` | 启动LiDAR驱动 |
+| `lidar-rviz` | 启动LiDAR驱动并打开RViz |
+| `pointlio` | 启动Point-LIO建图 |
+| `cb` | 快速构建工作空间 |
+| `rlib` | 清理构建缓存 |
+| `source-ros` | 加载ROS2环境 |
 
-### 1. Start LiDAR Driver
-```bash
-ros2 launch livox_ros_driver2 mid360_msg.launch.py
-```
+## 📡 Topics
 
-### 2. Start Point-LIO Mapping
-```bash
-ros2 launch point_lio point_lio.launch.py
-```
+| Topic | 消息类型 | 说明 |
+|-------|----------|------|
+| `/livox/lidar` | CustomMsg | LiDAR点云数据 |
+| `/livox/imu` | Imu | IMU数据 |
+| `/Odometry` | Odometry | SLAM里程计输出 |
+| `/path` | Path | 轨迹路径 |
+| `/cloud_registered` | PointCloud2 | 配准后的点云 |
 
-### 3. Start with RViz Visualization
-```bash
-ros2 launch livox_ros_driver2 mid360_rviz.launch.py
-```
+## 🔧 手动配置（可选）
 
-## Topics
-
-- `/livox/lidar` - LiDAR point cloud data (CustomMsg format)
-- `/livox/imu` - IMU data
-- `/Odometry` - SLAM odometry output
-- `/path` - Trajectory path
-- `/cloud_registered` - Registered point cloud
-
-## Network Configuration
-
-Make sure your network is configured as follows:
-- Host PC: 192.168.1.50
-- LiDAR: 192.168.1.197
-- Subnet: 192.168.1.0/24
-
-## Optimizations
-
-The system is optimized for maximum performance:
-- 50 Hz LiDAR frequency
-- CustomMsg format for efficient Point-LIO processing
-- Cleaned up build system for ROS2 only
-- Optimized network configuration
-
-## Troubleshooting
-
-If you encounter build issues:
-1. Clean the build cache: `rlib` (or `rm -rf build/ install/ log/`)
-2. Make sure Livox SDK is installed: `sudo apt install livox-sdk`
-3. Check network connectivity to LiDAR
-4. Verify IP configuration matches the settings above
-
-## Alias Management
-
-### Adding Aliases Permanently
-To make aliases available in every new terminal session:
-
-1. **Edit bashrc file:**
-   ```bash
-   nano ~/.bashrc
-   ```
-
-2. **Add aliases at the end of the file:**
-   ```bash
-   # ROS2 Mapping Aliases
-   alias lidar="ros2 launch livox_ros_driver2 mid360_msg.launch.py"
-   alias lidar-rviz="ros2 launch livox_ros_driver2 mid360_rviz.launch.py"
-   alias pointlio="ros2 launch point_lio point_lio.launch.py"
-   alias cb="colcon build --symlink-install --parallel-workers 8"
-   alias rlib="rm -rf build log install"
-   alias source-ros="source ~/ros2_ws/install/setup.bash"
-   ```
-
-3. **Save and reload:**
-   ```bash
-   source ~/.bashrc
-   ```
-
-### Temporary Aliases
-For current session only:
-```bash
-alias lidar="ros2 launch livox_ros_driver2 mid360_msg.launch.py"
-```
-
-### List All Aliases
-```bash
-alias
-```
-
-### Remove an Alias
-```bash
-unalias lidar
-``` 
-
-## 依赖环境一键安装推荐
-
-### 1. 使用rosdep自动安装依赖
-
-在工作空间根目录下执行：
+### 安装依赖
 ```bash
 sudo apt install python3-rosdep
 sudo rosdep init
 rosdep update
 rosdep install --from-paths src --ignore-src -r -y
 ```
-这样可以自动安装所有ROS包依赖，避免手动遗漏。
 
-### 2. 鱼香ROS一键安装脚本（推荐新环境快速部署）
-
-[官方GitHub仓库](https://github.com/fishros/install)
-
-一键安装命令：
+### 构建工作空间
 ```bash
-source <(wget -qO- http://fishros.com/install)
+cd ~/ros2_ws
+colcon build --symlink-install
+source install/setup.bash
 ```
-该脚本支持一键安装ROS1/ROS2、VSCode、rosdep等常用开发环境。
+
+## 🌐 网络配置
+
+确保网络配置如下：
+- **主机IP**: 192.168.1.50
+- **LiDAR IP**: 192.168.1.1** (根据序列号)
+- **子网**: 192.168.1.0/24
+
+## 🚨 故障排除
+
+### 常见问题
+1. **构建失败**: 运行 `rlib` 清理缓存后重新构建
+2. **网络连接**: 检查LiDAR IP配置和网络连接
+3. **依赖缺失**: 运行 `rosdep install` 安装缺失依赖
+
+### 调试命令
+```bash
+# 检查Topic连接
+ros2 topic list | grep livox
+
+# 检查LiDAR数据频率
+ros2 topic hz /livox/lidar
+
+# 查看IMU数据
+ros2 topic echo /livox/imu
+```
+
+## 📚 相关资源
+
+- [鱼香ROS一键安装](https://github.com/fishros/install): `source <(wget -qO- http://fishros.com/install)`
+- [Livox ROS Driver2](https://github.com/Livox-SDK/livox_ros_driver2)
+- [Point-LIO](https://github.com/hku-mars/Point-LIO)
 
 ---
 
-## LiDAR IP 配置说明
-
-请在如下文件中修改 LiDAR 的 IP 地址：
-
-- `livox_ros_driver2/config/MID360_config.json`
-  ```json
-  {
-    ...
-    "lidar_configs" : [
-      {
-        "ip" : "192.168.1.197",   // ← 这里修改为你的雷达IP
-        ...
-      }
-    ]
-  }
-  ```
-
---- 
+*如有问题，请查看 `README_DEBUG.md` 获取详细调试信息。* 
