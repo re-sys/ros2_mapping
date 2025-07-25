@@ -44,6 +44,7 @@ typedef enum {
   kLivoxCustomMsg = 1,
   kPclPxyziMsg = 2,
   kLivoxImuMsg = 3,
+  kBothMsg = 4,  // 同时发送PointCloud2和自定义消息
 } TransferType;
 
 /** Type-Definitions based on ROS versions */
@@ -103,6 +104,7 @@ class Lddc final {
   void PublishPointcloud2(LidarDataQueue *queue, uint8_t index);
   void PublishCustomPointcloud(LidarDataQueue *queue, uint8_t index);
   void PublishPclMsg(LidarDataQueue *queue, uint8_t index);
+  void PublishBothMsg(LidarDataQueue *queue, uint8_t index);  // 新增：同时发布两种消息
 
   void PublishImuData(LidarImuDataQueue& imu_data_queue, const uint8_t index);
 
@@ -130,6 +132,8 @@ class Lddc final {
 
   PublisherPtr GetCurrentPublisher(uint8_t index);
   PublisherPtr GetCurrentImuPublisher(uint8_t index);
+  PublisherPtr GetCurrentPointCloud2Publisher(uint8_t index);  // 新增：获取PointCloud2发布器
+  PublisherPtr GetCurrentCustomMsgPublisher(uint8_t index);    // 新增：获取自定义消息发布器
 
  private:
   uint8_t transfer_format_;
@@ -153,6 +157,8 @@ class Lddc final {
   PublisherPtr global_pub_;
   PublisherPtr private_imu_pub_[kMaxSourceLidar];
   PublisherPtr global_imu_pub_;
+  PublisherPtr private_pointcloud2_pub_[kMaxSourceLidar];  // 新增：PointCloud2发布器数组
+  PublisherPtr private_custom_msg_pub_[kMaxSourceLidar];   // 新增：自定义消息发布器数组
 #endif
 
   livox_ros::DriverNode *cur_node_;
