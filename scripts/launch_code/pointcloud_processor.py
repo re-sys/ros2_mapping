@@ -28,12 +28,12 @@ class PointCloudProcessor(Node):
         )
         
         # 定义空间范围 (单位：米)
-        self.x_range = (-5.0, 5.0)    # X轴范围
-        self.y_range = (-5.0, 5.0)    # Y轴范围
-        self.z_range = (-1.0, 2.0)    # Z轴范围
+        self.x_range = (2.0, 5.0)    # X轴范围
+        self.y_range = (-3.0, 3.0)    # Y轴范围
+        self.z_range = (-0.5, 3.0)    # Z轴范围
         
         # 体素下采样大小
-        self.voxel_size = 0.05
+        self.voxel_size = 0.025
         
         self.get_logger().info('PointCloud Processor initialized')
         self.get_logger().info(f'Filtering range: X={self.x_range}, Y={self.y_range}, Z={self.z_range}')
