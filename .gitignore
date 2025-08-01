@@ -47,6 +47,7 @@ Thumbs.db
 *.lo
 *.o
 *.obj
+.marscode
 
 # Precompiled Headers
 *.gch
