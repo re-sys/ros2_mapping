@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import rclpy
+from rclpy.impl.rcutils_logger import Throttle
 from rclpy.node import Node
 from nav_msgs.msg import Odometry
 from geometry_msgs.msg import PoseWithCovarianceStamped, TransformStamped, Twist, Vector3
@@ -14,8 +15,14 @@ class OdomToMapConverter(Node):
         
         # 初始化坐标变换参数 (x, y, yaw)
         self.transform_params = [0.0, 0.0, 0.0]  # [x_offset, y_offset, yaw_rotation]
-        self.offset = 0.27
-        
+        self.offset = -0.15
+        self.last_rpm_value = 0.0
+        self.error_yaw_integral = 0.0
+        self.distance_compensate=0.0
+        self.x_seg_low = 2.6
+        self.x_seg_high = 3.5
+        self.tol=0.01
+        self.target_count = 1
         # 初始化变换后的坐标
         self.transformed_x = 0.0
         self.transformed_y = 0.0
@@ -33,7 +40,8 @@ class OdomToMapConverter(Node):
         
         # PID控制参数
         self.kp_angular = 2.0
-        self.max_angular_vel = 1.0
+        self.kp_integral = 0.15
+        self.max_angular_vel = 1.5
         
         
         # 订阅initialpose话题
@@ -86,51 +94,69 @@ class OdomToMapConverter(Node):
         self.get_logger().info('Odom to Map Converter initialized')
         self.get_logger().info('Transform parameters: x={:.3f}, y={:.3f}, yaw={:.3f}'.format(
             self.transform_params[0], self.transform_params[1], self.transform_params[2]))
+        self.get_logger().info(f"self.offseset:{self.offset:.2f}")
 
     def shoot_btn_callback(self, msg):
         """处理shoot_btn消息，设置目标角度"""
         if msg.data:  # 当收到true时
             # 将当前goal_pose的角度设为目标
-            self.goal_yaw = math.atan2(-self.transformed_y, -self.transformed_x)
-            self.has_goal = True
-            self.get_logger().info('Shoot button pressed! Target yaw set to: {:.3f}°'.format(
-                math.degrees(self.goal_yaw)))
+            self.get_goal()
+            self.target_count=1
+            
+    def get_goal(self):
+        self.goal_yaw = math.atan2(-self.transformed_y, -self.transformed_x)+0.005
+        self.has_goal = True
+        self.get_logger().info('Shoot button pressed! Target yaw set to: {:.3f}°'.format(
+            math.degrees(self.goal_yaw)))
 
-    def control_callback(self):
-        """旋转控制回调函数，控制到指定角度"""
+    def compute_cmd(self):
         if not self.has_goal:
             return
             
         # 计算角度误差
+        if (self.transformed_yaw-self.goal_yaw)>math.pi:
+            self.transformed_yaw -= 2*math.pi
+        elif (self.transformed_yaw-self.goal_yaw)<-math.pi:
+            self.transformed_yaw += 2*math.pi
         error_yaw = self.goal_yaw - self.transformed_yaw
-        
-        # 角度误差归一化到[-pi, pi]
-        while error_yaw > math.pi:
-            error_yaw -= 2 * math.pi
-        while error_yaw < -math.pi:
-            error_yaw += 2 * math.pi
-        
+        self.error_yaw_integral += error_yaw
+
+        self.error_yaw_integral = max(-0.4, min(0.5, self.error_yaw_integral))
         # 创建cmd_vel消息
         cmd_vel = Twist()
         
         # 角速度控制（基于yaw误差）
-        cmd_vel.angular.z = self.kp_angular * error_yaw
+        cmd_vel.angular.z = self.kp_angular * error_yaw + self.kp_integral * self.error_yaw_integral
         
         # 限制角速度
         cmd_vel.angular.z = max(-self.max_angular_vel, min(self.max_angular_vel, cmd_vel.angular.z))
         
         # 发布cmd_vel
         self.cmd_vel_pub.publish(cmd_vel)
-        
+        return error_yaw
+    def control_callback(self):
+        """旋转控制回调函数，控制到指定角度"""
+        error_yaw = self.compute_cmd()
+        # self.get_logger().info(f'Published cmd_vel: {cmd_vel.angular.z} for error_yaw: {error_yaw:.3f}°')
         # 检查是否到达目标角度
-        if abs(error_yaw) < 0.02:  # 约3度误差
+        if self.has_goal  and abs(error_yaw) < self.tol:  # 约3度误差
+            self.error_yaw_integral = 0.0
+            if self.target_count ==1:
+                self.get_goal()
+                self.compute_cmd()
+                self.target_count-=1
+                return
+            
             self.get_logger().info('Target angle reached! Current yaw: {:.3f}°, Target yaw: {:.3f}°'.format(
                 math.degrees(self.transformed_yaw), math.degrees(self.goal_yaw)))
             
             # 计算到map原点的距离并发布RPM值
             distance = math.sqrt(self.transformed_x**2 + self.transformed_y**2)
+            if distance < self.x_seg_low or distance >6.0:
+                return
             rpm_value = self.calculate_rpm(distance+self.offset)
-            
+            # self.get_logger().info(f'Published RPM: {rpm_value} for distance: {distance:.2f}m')
+            self.last_rpm_value = rpm_value
             rpm_msg = Vector3()
             rpm_msg.x = rpm_value
             rpm_msg.y = rpm_value
@@ -138,10 +164,22 @@ class OdomToMapConverter(Node):
             self.rpm_pub.publish(rpm_msg)
             self.get_logger().info(f'Published RPM: {rpm_value} for distance: {distance:.2f}m')
             
-            self.has_goal = False
             
+            self.has_goal = False
+            # self.target_count-=1
+        # else:
+        #     self.get_logger().info(f"error_integral: {self.error_yaw_integral}")
+        #     self.get_logger().info(f'Current yaw: {math.degrees(self.transformed_yaw):.3f}°, Target yaw: {math.degrees(self.goal_yaw):.3f}°')
+        #     self.get_logger().info(f'Published cmd_vel: {cmd_vel.angular.z} for error_yaw: {error_yaw:.3f}°')
     def calculate_rpm(self,x):
-        RPM = 436.262883 * x + 834.703062
+        if  x > self.x_seg_low and x<self.x_seg_high:
+            RPM = -54.428954 * x**2 + 860.393555 * x + 29.221919
+            print('use quad')
+        else:
+            RPM = 430.9047619047621*(x+0.15-self.offset)+ 809.6428571428569  
+            print('use linear')
+        # RPM = 425*(x-2.6)+ 1850
+        # RPM = 436.262883 * x + 834.703062
         return RPM
     
     def initialpose_callback(self, msg):
@@ -204,17 +242,19 @@ class OdomToMapConverter(Node):
 
     def print_transformed_coordinates(self, original_x, original_y, original_yaw):
         """打印转换后的坐标信息"""
-        print("=" * 60)
-        print("坐标转换结果:")
-        print(f"原始Odometry坐标: x={original_x:.3f}, y={original_y:.3f}, yaw={math.degrees(original_yaw):.2f}°")
-        print(f"转换后Map坐标:    x={self.transformed_x:.3f}, y={self.transformed_y:.3f}, yaw={math.degrees(self.transformed_yaw):.2f}°")
-        print(f"变换参数:         x_offset={self.transform_params[0]:.3f}, y_offset={self.transform_params[1]:.3f}, yaw_rotation={math.degrees(self.transform_params[2]):.2f}°")
-        
-        if self.map_origin_set:
-            print(f"Map原点:          x={self.map_origin_x:.3f}, y={self.map_origin_y:.3f}, yaw={math.degrees(self.map_origin_yaw):.2f}°")
-        else:
-            print("Map原点:          未设置")
-        print("=" * 60)
+        # print("=" * 60)
+        # print("坐标转换结果:")
+        # print(f"原始Odometry坐标: x={original_x:.3f}, y={original_y:.3f}, yaw={math.degrees(original_yaw):.2f}°")
+        # print(f"转换后Map坐标:    x={self.transformed_x:.3f}, y={self.transformed_y:.3f}, yaw={math.degrees(self.transformed_yaw):.2f}°")
+        self.get_logger().info(f"当前距离:         {math.sqrt(self.transformed_x**2 + self.transformed_y**2):.2f}m",throttle_duration_sec=5.0)
+        # print(f"变换参数:         x_offset={self.transform_params[0]:.3f}, y_offset={self.transform_params[1]:.3f}, yaw_rotation={math.degrees(self.transform_params[2]):.2f}°")
+        # print(f"当前计算的转速:   {self.calculate_rpm(math.sqrt(self.transformed_x**2 + self.transformed_y**2)):.2f}RPM")
+        # print(f"上次计算的转速:   {self.last_rpm_value:.2f}RPM")
+        # if self.map_origin_set:
+        #     print(f"Map原点:          x={self.map_origin_x:.3f}, y={self.map_origin_y:.3f}, yaw={math.degrees(self.map_origin_yaw):.2f}°")
+        # else:
+        #     print("Map原点:          未设置")
+        # print("=" * 60)
 
     def quaternion_to_yaw(self, quaternion):
         """从四元数提取yaw角"""
