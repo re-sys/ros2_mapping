@@ -32,6 +32,13 @@ class PositionController(Node):
         self.kp_linear = 2.0  # 线速度比例系数
         self.max_linear_vel = 7.0  # 最大线速度
         
+        # 角度控制参数
+        self.use_angular_control = False  # 是否使用角度闭环控制
+        self.kp_angular = 4.0  # 角速度比例系数
+        self.kd_angular = 1.0  # 角速度微分系数
+        self.max_angular_vel = 2.2  # 最大角速度
+        self.last_error_yaw = 0.0  # 上次角度误差
+        
         # 从yaml文件加载目标位置列表
         self.load_target_positions()
         
@@ -86,6 +93,17 @@ class PositionController(Node):
         
         self.get_logger().info('Position Controller initialized')
         self.get_logger().info(f'Loaded {len(self.target_positions)} target positions from config')
+        self.get_logger().info(f'Angular control: {"ON" if self.use_angular_control else "OFF"}')
+        
+    def toggle_angular_control(self):
+        """切换角度控制模式"""
+        self.use_angular_control = not self.use_angular_control
+        self.get_logger().info(f'Angular control {"ENABLED" if self.use_angular_control else "DISABLED"}')
+        
+    def set_angular_control(self, enabled):
+        """设置角度控制模式"""
+        self.use_angular_control = enabled
+        self.get_logger().info(f'Angular control {"ENABLED" if self.use_angular_control else "DISABLED"}')
         
     def load_target_positions(self):
         """从yaml文件加载目标位置列表"""
@@ -241,7 +259,7 @@ class PositionController(Node):
         return error_yaw
     
     def is_position_reached(self, target):
-        """检查是否到达目标位置（只检查xy位置，不检查转向）"""
+        """检查是否到达目标位置"""
         if not self.current_position:
             return False
             
@@ -250,8 +268,15 @@ class PositionController(Node):
         dy = target.y - self.current_position.y
         distance = math.sqrt(dx*dx + dy*dy)
         
-        # 只检查位置距离，不检查角度
-        return distance < self.position_tolerance
+        # 根据是否使用角度控制来决定检查条件
+        if self.use_angular_control:
+            # 计算角度误差
+            error_yaw = self.calculate_error_yaw(target.z)
+            angle_diff = abs(error_yaw)
+            return distance < self.position_tolerance and angle_diff < 0.1  # 角度容差0.1弧度
+        else:
+            # 只检查位置距离，不检查角度
+            return distance < self.position_tolerance
         
     def control_callback(self):
         """主控制循环"""
@@ -273,16 +298,21 @@ class PositionController(Node):
                 cmd_vel = self.compute_control_command(current_target)
                 self.cmd_vel_pub.publish(cmd_vel)
                 
-                # 计算到目标的距离
+                # 计算到目标的距离和角度
                 dx = current_target.x - self.current_position.x
                 dy = current_target.y - self.current_position.y
                 distance = math.sqrt(dx*dx + dy*dy)
-                    
-                self.get_logger().info(f'Moving to target {self.current_target_index + 1}: distance={distance:.3f}m', 
-                                     throttle_duration_sec=2.0)
+                
+                if self.use_angular_control:
+                    error_yaw = self.calculate_error_yaw(current_target.z)
+                    self.get_logger().info(f'Moving to target {self.current_target_index + 1}: distance={distance:.3f}m, angle_diff={math.degrees(abs(error_yaw)):.2f}°', 
+                                         throttle_duration_sec=2.0)
+                else:
+                    self.get_logger().info(f'Moving to target {self.current_target_index + 1}: distance={distance:.3f}m', 
+                                         throttle_duration_sec=2.0)
     
     def compute_control_command(self, target):
-        """计算控制命令（只控制位置，不控制角度）"""
+        """计算控制命令"""
         cmd_vel = Twist()
         
         if not self.current_position:
@@ -305,16 +335,29 @@ class PositionController(Node):
         linear_x = self.kp_linear * robot_dx
         linear_y = self.kp_linear * robot_dy
         
-        # 限制速度范围
+        # 限制线速度范围
         linear_x = max(-self.max_linear_vel, min(self.max_linear_vel, linear_x))
         linear_y = max(-self.max_linear_vel, min(self.max_linear_vel, linear_y))
+        
+        # 根据是否使用角度控制来计算角速度
+        if self.use_angular_control:
+            # 计算角度误差（PID控制）
+            error_yaw = self.calculate_error_yaw(target.z)
+            angular_z = self.kp_angular * error_yaw + self.kd_angular * (error_yaw - self.last_error_yaw)
+            self.last_error_yaw = error_yaw
+            
+            # 限制角速度范围
+            angular_z = max(-self.max_angular_vel, min(self.max_angular_vel, angular_z))
+        else:
+            # 不控制角速度
+            angular_z = 0.0
         
         cmd_vel.linear.x = linear_x
         cmd_vel.linear.y = linear_y
         cmd_vel.linear.z = 0.0
         cmd_vel.angular.x = 0.0
         cmd_vel.angular.y = 0.0
-        cmd_vel.angular.z = 0.0  # 不控制角速度
+        cmd_vel.angular.z = angular_z
         
         return cmd_vel
 
