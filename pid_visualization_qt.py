@@ -183,6 +183,14 @@ class PlotWidget(QWidget):
             y = self.height() - 50 - i * (self.height() - 100) // 10
             value = self.y_min + i * (self.y_max - self.y_min) / 10
             painter.drawText(0, y + 5, f"{value:.3f}")
+        
+        # 绘制X轴刻度
+        painter.setFont(QFont("Arial", 10))
+        for i in range(11):
+            x = 50 + i * (self.width() - 100) // 10
+            # 计算时间值（基于数据点数量，假设每个数据点间隔0.05秒）
+            time_value = i * (self.max_points - 1) * 0.05 / 10
+            painter.drawText(x - 20, self.height() - 30, f"{time_value:.1f}")
     
     def draw_legend(self, painter):
         """绘制图例"""
@@ -208,7 +216,7 @@ class PlotWidget(QWidget):
                 status_text = f"Complete: {self.data_count} points collected"
                 painter.setPen(QColor(0, 0, 128))
             else:
-                status_text = "Waiting for shoot button..."
+                status_text = "Waiting for shoot_btn message..."
                 painter.setPen(QColor(128, 128, 128))
         
         painter.drawText(60, 30, status_text)
@@ -249,6 +257,9 @@ class PlotWidget(QWidget):
 class ROSThread(QThread):
     """ROS线程，处理ROS通信"""
     
+    # 定义信号
+    shoot_triggered = pyqtSignal()
+    
     def __init__(self):
         super().__init__()
         self.node = None
@@ -257,6 +268,9 @@ class ROSThread(QThread):
     def run(self):
         rclpy.init()
         self.node = PIDVisualizationQtNode()
+        
+        # 连接信号
+        self.node.shoot_triggered_signal = self.shoot_triggered
         
         while self.running and rclpy.ok():
             rclpy.spin_once(self.node, timeout_sec=0.1)
@@ -279,6 +293,14 @@ class PIDVisualizationQtNode(Node):
             Float32MultiArray,
             '/pid_info',
             self.pid_info_callback,
+            10
+        )
+        
+        # 订阅shoot_btn话题
+        self.shoot_btn_sub = self.create_subscription(
+            Bool,
+            '/shoot_btn',
+            self.shoot_btn_callback,
             10
         )
         
@@ -307,6 +329,9 @@ class PIDVisualizationQtNode(Node):
         self.last_pid_info_time = None
         self.pid_info_count = 0
         
+        # 信号用于通知UI开始采集
+        self.shoot_triggered_signal = None
+        
         self.get_logger().info("PID可视化Qt节点已启动")
     
     def pid_info_callback(self, msg):
@@ -331,6 +356,14 @@ class PIDVisualizationQtNode(Node):
                     self.get_logger().info(f"PID信息接收频率: {frequency:.1f}Hz (间隔: {time_interval*1000:.1f}ms)")
             
             self.last_pid_info_time = current_time
+    
+    def shoot_btn_callback(self, msg):
+        """处理shoot_btn话题消息"""
+        if msg.data:  # 如果shoot_btn为true
+            self.get_logger().info("接收到shoot_btn为true，开始数据采集")
+            # 通过信号通知UI开始采集
+            if self.shoot_triggered_signal:
+                self.shoot_triggered_signal.emit()
     
     def publish_shoot_btn(self):
         """发布shoot_btn消息"""
@@ -461,7 +494,7 @@ class MainWindow(QMainWindow):
         status_group = QGroupBox("Status")
         status_layout = QVBoxLayout()
         
-        self.status_label = QLabel("Ready")
+        self.status_label = QLabel("Ready - Waiting for shoot_btn message")
         self.status_label.setMinimumHeight(40)
         self.status_label.setStyleSheet("QLabel { font-size: 14px; font-weight: bold; }")
         status_layout.addWidget(self.status_label)
@@ -479,14 +512,20 @@ class MainWindow(QMainWindow):
     def start_ros_thread(self):
         """启动ROS线程"""
         self.ros_thread = ROSThread()
+        # 连接信号到槽函数
+        self.ros_thread.shoot_triggered.connect(self.on_shoot_triggered)
         self.ros_thread.start()
     
     def on_shoot_clicked(self):
         """处理Shoot按钮点击"""
         if self.ros_thread and self.ros_thread.node:
             self.ros_thread.node.publish_shoot_btn()
-            self.plot_widget.start_collection()
-            self.status_label.setText("Shoot triggered, collecting 150 data points...")
+            self.status_label.setText("Shoot button clicked, waiting for shoot_btn message...")
+    
+    def on_shoot_triggered(self):
+        """处理接收到shoot_btn为true的信号"""
+        self.plot_widget.start_collection()
+        self.status_label.setText("Shoot triggered, collecting 150 data points...")
     
     def on_send_pid_clicked(self):
         """处理发送PID参数按钮点击"""

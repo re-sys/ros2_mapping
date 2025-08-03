@@ -115,7 +115,7 @@ class AdvancedPIDController:
         # 微分项
         if dt > 0:
             derivative = (error - self.last_error) / dt
-            print(f'derivative: {derivative:.4f}')
+            # print(f'derivative: {derivative:.4f}')
             # 微分滤波
             # if self.derivative_filter and len(self.error_history) > 0:
             #     derivative = self.filter_alpha * derivative + (1 - self.filter_alpha) * self.last_output
@@ -165,8 +165,8 @@ class PIDRotateShootNode(Node):
         
         # 初始化坐标变换参数
         self.transform_params = [0.0, 0.0, 0.0]  # [x_offset, y_offset, yaw_rotation]
-        self.tol = 0.015
-        self.max_check_times = 3
+        self.tol = 0.01
+        self.max_check_times = 2
         
         # 初始化变换后的坐标
         self.transformed_x = 0.0
@@ -185,9 +185,9 @@ class PIDRotateShootNode(Node):
         
         # 创建PID控制器
         self.pid_controller = AdvancedPIDController(
-            kp=4.0, ki=0.1, kd=0.5,
+            kp=5.0, ki=0.0, kd=0.2,
             output_min=-2.2, output_max=2.2,
-            integral_min=-1.0, integral_max=1.0,
+            integral_min=-1.0,integral_max=1.0,
             deadband=0.001,
             sample_time=0.05
         )
@@ -294,16 +294,17 @@ class PIDRotateShootNode(Node):
             distance = math.sqrt(self.transformed_x**2 + self.transformed_y**2)
             # 正常模式：将当前goal_pose的角度设为目标
             self.get_goal()
+            
             self.pid_controller.first_loop = True
             self.left_reach_times = self.max_check_times
-            error_yaw = self.calculate_error_yaw()
+            print(f"elf.left_reach_times{self.left_reach_times}")
             
     
     def get_goal(self):
         """计算目标角度"""
         self.goal_yaw = math.atan2(-self.transformed_y, -self.transformed_x)
         self.has_goal = True
-        self.get_logger().info('Shoot button pressed! Target yaw set to: {:.3f}°'.format(
+        self.get_logger().info('Target yaw set to: {:.3f}°'.format(
             math.degrees(self.goal_yaw)))
     
     def calculate_error_yaw(self):
@@ -364,15 +365,17 @@ class PIDRotateShootNode(Node):
         """旋转控制回调函数，使用PID控制到指定角度"""
         if not self.has_goal:
             return
-            
+        
         # 检查是否到达目标角度
         error_yaw = self.calculate_error_yaw()
         if abs(error_yaw) < self.tol:
             self.left_reach_times -= 1
-            self.cmd_vel_pub.publish(Twist())  # 停止
+            self.get_goal()
+            self.compute_pid_and_publish()
             self.get_logger().info(f'Left reach times: {self.left_reach_times}')
         else:
-            self.left_reach_times = 3
+            self.left_reach_times = self.max_check_times
+            self.get_goal()
             self.get_logger().info(f'error_yaw: {error_yaw:.4f}', throttle_duration_sec=1.0)
             self.compute_pid_and_publish()
         
@@ -456,6 +459,8 @@ class PIDRotateShootNode(Node):
     
     def print_transformed_coordinates(self, original_x, original_y, original_yaw):
         """打印转换后的坐标信息"""
+        self.get_logger().info('Current yaw: {:.3f}°, Target yaw: {:.3f}°'.format(
+                math.degrees(self.transformed_yaw), math.degrees(self.goal_yaw)),throttle_duration_sec=1.0)
         self.get_logger().info(f"当前距离: {math.sqrt(self.transformed_x**2 + self.transformed_y**2):.2f}m", throttle_duration_sec=5.0)
     
     def quaternion_to_yaw(self, quaternion):
