@@ -124,7 +124,21 @@ class OdomToMapConverter(Node):
     def shoot_btn_callback(self, msg):
         """处理shoot_btn消息，设置目标角度"""
         if msg.data:  # 当收到true时
-            # 将当前goal_pose的角度设为目标
+            # 计算当前距离
+            distance = math.sqrt(self.transformed_x**2 + self.transformed_y**2)
+            
+            # 检查是否在直接发射模式范围内
+            if distance < self.x_seg_low:
+                self.get_logger().info(f'Direct shoot mode! Distance: {distance:.2f}m < {self.x_seg_low}m')
+                # 直接发射模式：不转动，直接设置RPM为1500
+                rpm_msg = Vector3()
+                rpm_msg.x = 1500.0
+                rpm_msg.y = 1500.0
+                rpm_msg.z = 1500.0
+                self.rpm_pub.publish(rpm_msg)
+                return
+            
+            # 正常模式：将当前goal_pose的角度设为目标
             self.get_goal()
             self.left_reach_times=3
             error_yaw = self.calculate_error_yaw()

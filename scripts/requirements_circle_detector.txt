@@ -1,0 +1,5 @@
+numpy>=1.19.0
+opencv-python>=4.5.0
+scikit-learn>=1.0.0
+rclpy>=0.6.0
+sensor-msgs>=2.0.0 
