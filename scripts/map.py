@@ -5,7 +5,7 @@ from rclpy.impl.rcutils_logger import Throttle
 from rclpy.node import Node
 from nav_msgs.msg import Odometry
 from geometry_msgs.msg import PoseWithCovarianceStamped, TransformStamped, Twist, Vector3
-from std_msgs.msg import Bool
+from std_msgs.msg import Bool,Float32
 from tf2_ros import TransformBroadcaster
 import math
 
@@ -16,6 +16,7 @@ class OdomToMapConverter(Node):
         # 初始化坐标变换参数 (x, y, yaw)
         self.transform_params = [0.0, 0.0, 0.0]  # [x_offset, y_offset, yaw_rotation]
         self.offset = -0.15
+        self.delta_offset = 0.0
         self.last_rpm_value = 0.0
         self.error_yaw_integral = 0.0
         self.distance_compensate=0.0
@@ -43,7 +44,13 @@ class OdomToMapConverter(Node):
         self.kp_integral = 0.15
         self.max_angular_vel = 1.5
         
-        
+        self.distance_offset_sub = self.create_subscription(
+            Float32,
+            '/distance_offset',
+            self.distance_offset_callback,
+            10
+        )
+    
         # 订阅initialpose话题
         self.initialpose_sub = self.create_subscription(
             PoseWithCovarianceStamped,
@@ -95,13 +102,21 @@ class OdomToMapConverter(Node):
         self.get_logger().info('Transform parameters: x={:.3f}, y={:.3f}, yaw={:.3f}'.format(
             self.transform_params[0], self.transform_params[1], self.transform_params[2]))
         self.get_logger().info(f"self.offseset:{self.offset:.2f}")
+    
+    def distance_offset_callback(self, msg):
+        """
+        -1.5--> data--> +1.5
+        """
+        self.delta_offset = msg.data / 10 #单位转化成 m
+        self.get_logger().info(f"delta_distance_offset: {self.delta_offset:.2f}")
 
     def shoot_btn_callback(self, msg):
         """处理shoot_btn消息，设置目标角度"""
-        if msg.data:  # 当收到true时
             # 将当前goal_pose的角度设为目标
+        if msg.data:
             self.get_goal()
             self.target_count=1
+            self.offset += self.delta_offset
             
     def get_goal(self):
         self.goal_yaw = math.atan2(-self.transformed_y, -self.transformed_x)+0.005
