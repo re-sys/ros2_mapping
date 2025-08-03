@@ -40,14 +40,35 @@ class PointCloudCircleDetector(Node):
         
         # 投影参数
         self.projection_resolution = 0.01  # 投影分辨率 (m/pixel)
-        self.projection_size = (400, 400)  # 投影图像大小
+        self.projection_size = (600, 600)  # 投影图像大小
+        
+        # 显示参数
+        self.display_scale = 1.0        # 显示缩放比例
+        self.window_name = "Point Cloud Circle Detection"
+        
+        # 创建显示窗口
+        cv2.namedWindow(self.window_name, cv2.WINDOW_NORMAL)
+        cv2.resizeWindow(self.window_name, 
+                        int(self.projection_size[0] * self.display_scale), 
+                        int(self.projection_size[1] * self.display_scale))
+        
+        # 点云积累参数
+        self.accumulation_frames = 10   # 积累帧数
+        self.accumulated_points = []    # 积累的点云
+        self.frame_count = 0            # 当前帧数
+        self.circle_detected = False    # 圆形检测标志
         
         self.get_logger().info('点云圆形检测器已启动')
+        self.get_logger().info(f'点云积累帧数: {self.accumulation_frames}')
         
     def pointcloud_callback(self, msg):
         """
         点云回调函数
         """
+        # 如果已经检测到圆形，直接返回
+        if self.circle_detected:
+            return
+            
         try:
             # 解析点云数据
             points = self.parse_pointcloud2(msg)
@@ -59,9 +80,23 @@ class PointCloudCircleDetector(Node):
             if len(filtered_points) == 0:
                 self.get_logger().debug('空间滤波后无点云数据')
                 return
-                
+            
+            # 积累点云
+            self.accumulated_points.extend(filtered_points)
+            self.frame_count += 1
+            
+            # 显示积累进度
+            self.get_logger().info(f'点云积累进度: {self.frame_count}/{self.accumulation_frames}, 当前积累点数: {len(self.accumulated_points)}')
+            
+            # 检查是否达到积累帧数
+            if self.frame_count < self.accumulation_frames:
+                return
+            
+            # 转换为numpy数组
+            accumulated_points_array = np.array(self.accumulated_points)
+            
             # 投影到XY平面
-            projection_image = self.project_to_xy_plane(filtered_points)
+            projection_image = self.project_to_xy_plane(accumulated_points_array)
             if projection_image is None:
                 return
                 
@@ -69,13 +104,35 @@ class PointCloudCircleDetector(Node):
             contours = self.extract_contours(projection_image)
             if not contours:
                 self.get_logger().debug('未检测到轮廓')
+                # 显示原始投影图像
+                self.display_image(projection_image, None, accumulated_points_array)
+                self.get_logger().info('未检测到圆形，程序结束')
+                rclpy.shutdown()
                 return
                 
             # 圆形拟合
-            best_circle = self.fit_circle_ransac(filtered_points, contours)
+            best_circle = self.fit_circle_ransac(accumulated_points_array, contours)
             if best_circle is not None:
                 center_x, center_y, center_z, radius = best_circle
                 self.get_logger().info(f'检测到圆形: 中心({center_x:.3f}, {center_y:.3f}, {center_z:.3f}), 半径: {radius:.3f}m')
+                
+                # 显示投影图像和拟合的圆形
+                self.display_image(projection_image, best_circle, accumulated_points_array)
+                
+                # 标记已检测到圆形
+                self.circle_detected = True
+                
+                # 等待用户查看结果
+                self.get_logger().info('圆形检测完成，按任意键关闭窗口并结束程序')
+                cv2.waitKey(0)
+                
+                # 结束程序
+                rclpy.shutdown()
+            else:
+                # 显示原始投影图像
+                self.display_image(projection_image, None, accumulated_points_array)
+                self.get_logger().info('未检测到圆形，程序结束')
+                rclpy.shutdown()
                 
         except Exception as e:
             self.get_logger().error(f'处理点云时出错: {str(e)}')
@@ -330,6 +387,87 @@ class PointCloudCircleDetector(Node):
         nearest_idx = np.argmin(distances)
         
         return points[nearest_idx, 2]
+    
+    def display_image(self, projection_image, circle_info=None, points=None):
+        """
+        显示投影图像和拟合的圆形
+        
+        Args:
+            projection_image: 投影图像
+            circle_info: 圆形信息 (center_x, center_y, center_z, radius)
+            points: 原始点云数据
+        """
+        # 转换为彩色图像
+        display_image = cv2.cvtColor(projection_image, cv2.COLOR_GRAY2BGR)
+        
+        # 添加坐标轴信息
+        height, width = display_image.shape[:2]
+        
+        # 绘制坐标轴
+        cv2.line(display_image, (0, height//2), (width, height//2), (0, 255, 0), 1)  # X轴
+        cv2.line(display_image, (width//2, 0), (width//2, height), (0, 255, 0), 1)   # Y轴
+        
+        # 添加文本信息
+        cv2.putText(display_image, f"Points: {len(points) if points is not None else 0}", 
+                   (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+        
+        # 添加积累信息
+        cv2.putText(display_image, f"Accumulated: {self.frame_count}/{self.accumulation_frames} frames", 
+                   (10, 55), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2)
+        
+        # 如果有检测到圆形，绘制圆形和信息
+        if circle_info is not None:
+            center_x, center_y, center_z, radius = circle_info
+            
+            # 将世界坐标转换为像素坐标
+            pixel_center_x = int((center_x - self.x_range[0]) / self.projection_resolution)
+            pixel_center_y = int((center_y - self.y_range[0]) / self.projection_resolution)
+            pixel_radius = int(radius / self.projection_resolution)
+            
+            # 检查边界
+            if (0 <= pixel_center_x < width and 0 <= pixel_center_y < height and 
+                pixel_radius > 0 and pixel_radius < min(width, height)//2):
+                
+                # 绘制圆形
+                cv2.circle(display_image, (pixel_center_x, pixel_center_y), pixel_radius, (0, 0, 255), 2)
+                
+                # 绘制圆心
+                cv2.circle(display_image, (pixel_center_x, pixel_center_y), 3, (255, 0, 0), -1)
+                
+                # 添加圆形信息文本
+                info_text = [
+                    f"Center: ({center_x:.3f}, {center_y:.3f}, {center_z:.3f})",
+                    f"Radius: {radius:.3f}m",
+                    f"Pixel Center: ({pixel_center_x}, {pixel_center_y})",
+                    f"Pixel Radius: {pixel_radius}"
+                ]
+                
+                for i, text in enumerate(info_text):
+                    cv2.putText(display_image, text, (10, 60 + i*25), 
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+            else:
+                # 圆形超出边界，显示警告
+                cv2.putText(display_image, "Circle out of bounds", (10, 60), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+        else:
+            # 没有检测到圆形
+            cv2.putText(display_image, "No circle detected", (10, 60), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+        
+        # 添加坐标范围信息
+        range_text = [
+            f"X Range: {self.x_range[0]:.2f} to {self.x_range[1]:.2f}",
+            f"Y Range: {self.y_range[0]:.2f} to {self.y_range[1]:.2f}",
+            f"Z Range: {self.z_range[0]:.2f} to {self.z_range[1]:.2f}"
+        ]
+        
+        for i, text in enumerate(range_text):
+            cv2.putText(display_image, text, (10, height - 80 + i*20), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
+        
+        # 显示图像
+        cv2.imshow(self.window_name, display_image)
+        cv2.waitKey(1)  # 1ms延迟，允许窗口更新
 
 def main(args=None):
     rclpy.init(args=args)
@@ -341,6 +479,8 @@ def main(args=None):
     except KeyboardInterrupt:
         pass
     finally:
+        # 清理OpenCV窗口
+        cv2.destroyAllWindows()
         node.destroy_node()
         rclpy.shutdown()
 

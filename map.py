@@ -4,7 +4,7 @@ import rclpy
 from rclpy.impl.rcutils_logger import Throttle
 from rclpy.node import Node
 from nav_msgs.msg import Odometry
-from geometry_msgs.msg import PoseWithCovarianceStamped, TransformStamped, Twist, Vector3, PoseStamped
+from geometry_msgs.msg import PoseWithCovarianceStamped, TransformStamped, Twist, Vector3
 from std_msgs.msg import Bool, Float32
 from tf2_ros import TransformBroadcaster
 import math
@@ -236,31 +236,19 @@ class CoordinateTransformer:
 class OdomToMapConverter(Node):
     def __init__(self):
         super().__init__('odom_to_map_converter')
-        self.visual_pose_set = False
+        
         # 初始化坐标变换器
         self.coord_transformer = CoordinateTransformer()
         
         # 初始化PID控制器
-        if not self.visual_pose_set:
-            self.pid_controller = AdvancedPIDController(
-                kp=5.0, ki=0.0, kd=0.1,
-                output_min=-2.2, output_max=2.2,
-                integral_min=-1.0, integral_max=1.0,
-                sample_time=0.05
-            )
-        else:
-            self.pid_controller = AdvancedPIDController(
-                kp=2.5, ki=0.0, kd=0.0,
-                output_min=-2.2, output_max=2.2,
-                integral_min=-1.0, integral_max=1.0,
-                sample_time=0.05
-            )
+        self.pid_controller = AdvancedPIDController(
+            kp=5.0, ki=0.0, kd=0.1,
+            output_min=-2.2, output_max=2.2,
+            integral_min=-1.0, integral_max=1.0,
+            sample_time=0.05
+        )
         
-        # 控制参数        
-        self.visual_yaw = 0.0
-        self.x_visual = 0.0
-        self.y_visual = 0.0
-        self.z_visual = 0.0
+        # 控制参数
         self.offset = -0.15
         self.delta_offset = 0.0
         self.last_rpm_value = 0.0
@@ -268,7 +256,6 @@ class OdomToMapConverter(Node):
         self.x_seg_high = 3.5
         self.tol = 0.01
         self.left_reach_times = 3  # 改为left_reach_times形式
-        self.check_max_times = 3
         
         # 初始化目标位姿
         self.goal_yaw = 0.0
@@ -280,13 +267,6 @@ class OdomToMapConverter(Node):
             Float32,
             '/distance_offset',
             self.distance_offset_callback,
-            10
-        )
-
-        self.visual_pose_sub = self.create_subscription(
-            PoseStamped,
-            '/visual_pose',
-            self.visual_pose_callback,
             10
         )
         
@@ -354,11 +334,6 @@ class OdomToMapConverter(Node):
             self.coord_transformer.transform_params[2]))
         self.get_logger().info(f"self.offset:{self.offset:.2f}")
     
-    def visual_pose_callback(self, msg):
-        self.x_visual, self.y_visual, self.z_visual = msg.pose.position.x, msg.pose.position.y, msg.pose.position.z
-        self.get_logger().info(f"visual_pose: x={self.x_visual:.2f}, y={self.y_visual:.2f}, z={self.z_visual:.2f}")
-        self.visual_yaw = math.atan2(self.x_visual, self.z_visual)
-
     def distance_offset_callback(self, msg):
         """
         +1.5--> data--> -1.5
@@ -402,7 +377,7 @@ class OdomToMapConverter(Node):
         self.goal_yaw = base_goal + self.target_goal_offset
         self.has_goal = True
         self.get_logger().info('Shoot button pressed! Base target yaw: {:.3f}°, Offset: {:.3f}°, Final target yaw: {:.3f}°'.format(
-            math.degrees(base_goal), math.degrees(self.target_goal_offset), math.degrees(self.goal_yaw)), throttle_duration_sec=1.0)
+            math.degrees(base_goal), math.degrees(self.target_goal_offset), math.degrees(self.goal_yaw)))
 
     def calculate_error_yaw(self):
         """计算角度误差"""
@@ -419,9 +394,11 @@ class OdomToMapConverter(Node):
         error_yaw = target_yaw - current_yaw
         return error_yaw
 
-    def compute_cmd_and_publish(self,error_yaw):
+    def compute_cmd_and_publish(self):
         """计算PID输出并发布控制命令"""
-        # 使用PID控制器计算输出
+        # 计算角度误差
+        error_yaw = self.calculate_error_yaw()
+        
         # 使用PID控制器计算输出
         output, p_term, i_term, d_term = self.pid_controller.compute(error_yaw)
         
@@ -440,31 +417,22 @@ class OdomToMapConverter(Node):
             return
             
         # 检查是否到达目标角度
-        self.get_goal()
-
-        if self.visual_pose_set:
-            error_yaw = -self.visual_yaw 
-        else:
-            error_yaw = self.calculate_error_yaw()
-        
+        error_yaw = self.calculate_error_yaw()
         if abs(error_yaw) < self.tol:
             self.left_reach_times -= 1
             self.cmd_vel_pub.publish(Twist())
             self.get_logger().info(f'Left reach times: {self.left_reach_times}')
         else:
-            self.left_reach_times = self.check_max_times
+            self.left_reach_times = 3
             self.get_logger().info(f'error_yaw: {error_yaw}', throttle_duration_sec=1.0)
-            self.compute_cmd_and_publish(error_yaw)
+            self.compute_cmd_and_publish()
 
         if self.left_reach_times == 0:
             self.get_logger().info('Target angle reached! Current yaw: {:.3f}°, Target yaw: {:.3f}°'.format(
                 math.degrees(self.coord_transformer.transformed_yaw), math.degrees(self.goal_yaw)))
             
             # 计算到map原点的距离并发布RPM值
-            if self.visual_pose_set:
-                distance = self.z_visual
-            else:
-                distance = self.coord_transformer.get_distance_to_origin()
+            distance = self.coord_transformer.get_distance_to_origin()
 
             if distance > 6.0:
                 self.get_logger().info('Distance too far!')

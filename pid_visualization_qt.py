@@ -55,6 +55,13 @@ class PlotWidget(QWidget):
         self.is_collecting = False
         self.data_count = 0
         
+        # 性能指标
+        self.overshoot = 0.0
+        self.rise_time = 0.0
+        self.settling_time = 0.0
+        self.steady_state_error = 0.0
+        self.performance_calculated = False
+        
     def start_collection(self):
         """开始数据采集"""
         self.clear_data()
@@ -77,6 +84,8 @@ class PlotWidget(QWidget):
         # 达到150个数据点后停止采集
         if self.data_count >= self.max_points:
             self.is_collecting = False
+            # 计算性能指标
+            self.calculate_performance_metrics()
         
         # 更新Y轴范围 - 使用实际数据的范围
         all_data = self.error_yaw_data + self.p_data + self.i_data + self.d_data + self.output_data
@@ -99,6 +108,85 @@ class PlotWidget(QWidget):
         
         self.update()
     
+    def calculate_performance_metrics(self):
+        """计算性能指标：超调量、上升时间、稳定时间"""
+        if len(self.error_yaw_data) < 10:
+            return
+        
+        # 采样时间间隔（60Hz）
+        dt = 1.0 / 60.0
+        
+        # 计算稳态值（最后20个点的平均值）
+        steady_state_samples = min(20, len(self.error_yaw_data) // 4)
+        steady_state_value = np.mean(self.error_yaw_data[-steady_state_samples:])
+        
+        # 计算稳态误差
+        self.steady_state_error = abs(steady_state_value)
+        
+        # 计算超调量
+        max_value = max(self.error_yaw_data)
+        min_value = min(self.error_yaw_data)
+        
+        if abs(max_value) > abs(min_value):
+            # 正超调
+            self.overshoot = (max_value - steady_state_value) / abs(steady_state_value) * 100 if abs(steady_state_value) > 1e-6 else 0
+        else:
+            # 负超调
+            self.overshoot = (min_value - steady_state_value) / abs(steady_state_value) * 100 if abs(steady_state_value) > 1e-6 else 0
+        
+        # 计算上升时间（从10%到90%的响应时间）
+        initial_value = self.error_yaw_data[0]
+        target_range = abs(steady_state_value - initial_value)
+        
+        if target_range < 1e-6:
+            self.rise_time = 0.0
+        else:
+            # 找到10%和90%的时间点
+            threshold_10 = initial_value + 0.1 * target_range
+            threshold_90 = initial_value + 0.9 * target_range
+            
+            t_10 = None
+            t_90 = None
+            
+            for i, value in enumerate(self.error_yaw_data):
+                if t_10 is None and value >= threshold_10:
+                    t_10 = i * dt
+                if t_90 is None and value >= threshold_90:
+                    t_90 = i * dt
+                    break
+            
+            if t_10 is not None and t_90 is not None:
+                self.rise_time = t_90 - t_10
+            else:
+                self.rise_time = 0.0
+        
+        # 计算稳定时间（误差进入±5%稳态值范围内的时间）
+        tolerance = 0.05 * abs(steady_state_value)
+        if tolerance < 1e-6:
+            tolerance = 0.01  # 最小容差
+        
+        settling_time = 0.0
+        for i, value in enumerate(self.error_yaw_data):
+            if abs(value - steady_state_value) <= tolerance:
+                # 检查后续点是否都在容差范围内
+                all_settled = True
+                for j in range(i, min(i + 10, len(self.error_yaw_data))):
+                    if abs(self.error_yaw_data[j] - steady_state_value) > tolerance:
+                        all_settled = False
+                        break
+                if all_settled:
+                    settling_time = i * dt
+                    break
+        
+        self.settling_time = settling_time
+        self.performance_calculated = True
+        
+        print(f"性能指标计算结果:")
+        print(f"  超调量: {self.overshoot:.2f}%")
+        print(f"  上升时间: {self.rise_time:.3f}s")
+        print(f"  稳定时间: {self.settling_time:.3f}s")
+        print(f"  稳态误差: {self.steady_state_error:.4f}")
+    
     def clear_data(self):
         """清空所有数据"""
         self.error_yaw_data = []
@@ -108,6 +196,12 @@ class PlotWidget(QWidget):
         self.output_data = []
         self.is_collecting = False
         self.data_count = 0
+        # 重置性能指标
+        self.overshoot = 0.0
+        self.rise_time = 0.0
+        self.settling_time = 0.0
+        self.steady_state_error = 0.0
+        self.performance_calculated = False
         # 重置Y轴范围
         self.y_min = -1.0
         self.y_max = 1.0
@@ -188,9 +282,9 @@ class PlotWidget(QWidget):
         painter.setFont(QFont("Arial", 10))
         for i in range(11):
             x = 50 + i * (self.width() - 100) // 10
-            # 计算时间值（基于数据点数量，假设每个数据点间隔0.05秒）
-            time_value = i * (self.max_points - 1) * 0.05 / 10
-            painter.drawText(x - 20, self.height() - 30, f"{time_value:.1f}")
+            # 计算时间值（基于数据点数量，每个数据点间隔1/60秒，因为更新频率是60Hz）
+            time_value = i * (self.max_points - 1) / 60.0 / 10
+            painter.drawText(x - 20, self.height() - 30, f"{time_value:.2f}")
     
     def draw_legend(self, painter):
         """绘制图例"""
@@ -220,6 +314,20 @@ class PlotWidget(QWidget):
                 painter.setPen(QColor(128, 128, 128))
         
         painter.drawText(60, 30, status_text)
+        
+        # 显示性能指标
+        if self.performance_calculated:
+            painter.setFont(QFont("Arial", 10))
+            painter.setPen(QColor(0, 0, 0))
+            
+            # 性能指标显示位置
+            metrics_x = 60
+            metrics_y = 60
+            
+            painter.drawText(metrics_x, metrics_y, f"Overshoot: {self.overshoot:.1f}%")
+            painter.drawText(metrics_x, metrics_y + 20, f"Rise Time: {self.rise_time:.3f}s")
+            painter.drawText(metrics_x, metrics_y + 40, f"Settling Time: {self.settling_time:.3f}s")
+            painter.drawText(metrics_x, metrics_y + 60, f"Steady State Error: {self.steady_state_error:.4f}")
     
     def draw_curves(self, painter):
         """绘制曲线"""
@@ -502,6 +610,22 @@ class MainWindow(QMainWindow):
         status_group.setLayout(status_layout)
         control_layout.addWidget(status_group)
         
+        # 性能指标显示组
+        performance_group = QGroupBox("Performance Metrics")
+        performance_layout = QVBoxLayout()
+        
+        self.overshoot_label = QLabel("Overshoot: --")
+        self.rise_time_label = QLabel("Rise Time: --")
+        self.settling_time_label = QLabel("Settling Time: --")
+        self.steady_error_label = QLabel("Steady State Error: --")
+        
+        for label in [self.overshoot_label, self.rise_time_label, self.settling_time_label, self.steady_error_label]:
+            label.setStyleSheet("QLabel { font-size: 12px; }")
+            performance_layout.addWidget(label)
+        
+        performance_group.setLayout(performance_layout)
+        control_layout.addWidget(performance_group)
+        
         main_layout.addLayout(control_layout)
         
         # 设置定时器用于更新曲线图 - 60Hz更新频率
@@ -555,6 +679,13 @@ class MainWindow(QMainWindow):
                 self.ros_thread.node.d_value,
                 self.ros_thread.node.output_value
             )
+            
+            # 更新性能指标显示
+            if self.plot_widget.performance_calculated:
+                self.overshoot_label.setText(f"Overshoot: {self.plot_widget.overshoot:.1f}%")
+                self.rise_time_label.setText(f"Rise Time: {self.plot_widget.rise_time:.3f}s")
+                self.settling_time_label.setText(f"Settling Time: {self.plot_widget.settling_time:.3f}s")
+                self.steady_error_label.setText(f"Steady State Error: {self.plot_widget.steady_state_error:.4f}")
     
     def closeEvent(self, event):
         """窗口关闭事件"""
