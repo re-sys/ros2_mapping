@@ -5,6 +5,7 @@ from rclpy.node import Node
 from geometry_msgs.msg import Twist, TransformStamped
 from nav_msgs.msg import Odometry
 from tf2_ros import TransformBroadcaster
+from std_srvs.srv import SetBool
 import math
 import numpy as np
 
@@ -25,12 +26,23 @@ class RobotSimulator(Node):
         self.max_linear_vel = 2.0  # 最大线速度 m/s
         self.max_angular_vel = 3.0  # 最大角速度 rad/s
         
+        # 控制模式标志
+        self.declare_parameter('global_control_mode', True)
+        self.global_control_mode = self.get_parameter('global_control_mode').value  # True: 全局控制模式, False: 局部控制模式
+        
         # 订阅cmd_vel话题
         self.cmd_vel_sub = self.create_subscription(
             Twist,
             '/cmd_vel',
             self.cmd_vel_callback,
             10
+        )
+        
+        # 创建控制模式切换服务
+        self.control_mode_service = self.create_service(
+            SetBool,
+            '/set_control_mode',
+            self.set_control_mode_callback
         )
         
         # 发布Odometry话题
@@ -49,22 +61,39 @@ class RobotSimulator(Node):
         self.get_logger().info('Robot Simulator initialized')
         self.get_logger().info('Publishing Odometry at 20Hz')
         self.get_logger().info('Listening to /cmd_vel for movement commands')
+        self.get_logger().info(f'Control mode: {"Global" if self.global_control_mode else "Local"}')
         
     def cmd_vel_callback(self, msg):
         """处理速度命令"""
-        # 限制速度范围
-        self.vx = max(-self.max_linear_vel, min(self.max_linear_vel, msg.linear.x))
-        self.vy = max(-self.max_linear_vel, min(self.max_linear_vel, msg.linear.y))
-        self.vz = max(-self.max_angular_vel, min(self.max_angular_vel, msg.angular.z))
-        
-        self.get_logger().info(f'Received cmd_vel: linear=({self.vx:.2f}, {self.vy:.2f}), angular={self.vz:.2f}',throttle_duration_sec=1.0)
+        if self.global_control_mode:
+            # 全局控制模式：速度方向始终与初始坐标系xy轴重合
+            # 直接使用cmd_vel中的x,y速度，不进行坐标系转换
+            self.vx = max(-self.max_linear_vel, min(self.max_linear_vel, msg.linear.x))
+            self.vy = max(-self.max_linear_vel, min(self.max_linear_vel, msg.linear.y))
+            self.vz = max(-self.max_angular_vel, min(self.max_angular_vel, msg.angular.z))
+            
+            self.get_logger().info(f'Global mode - cmd_vel: linear=({self.vx:.2f}, {self.vy:.2f}), angular={self.vz:.2f}', throttle_duration_sec=1.0)
+        else:
+            # 局部控制模式：速度方向相对于机器人当前朝向
+            # 限制速度范围
+            self.vx = max(-self.max_linear_vel, min(self.max_linear_vel, msg.linear.x))
+            self.vy = max(-self.max_linear_vel, min(self.max_linear_vel, msg.linear.y))
+            self.vz = max(-self.max_angular_vel, min(self.max_angular_vel, msg.angular.z))
+            
+            self.get_logger().info(f'Local mode - cmd_vel: linear=({self.vx:.2f}, {self.vy:.2f}), angular={self.vz:.2f}', throttle_duration_sec=1.0)
         
     def update_simulation(self):
         """更新仿真状态"""
-        # 更新位置和角度
-        self.x += (self.vx * math.cos(self.yaw) - self.vy * math.sin(self.yaw)) * self.dt
-        self.y += (self.vx * math.sin(self.yaw) + self.vy * math.cos(self.yaw)) * self.dt
-        self.yaw += self.vz * self.dt
+        if self.global_control_mode:
+            # 全局控制模式：直接使用全局坐标系的速度
+            self.x += self.vx * self.dt
+            self.y += self.vy * self.dt
+            self.yaw += self.vz * self.dt
+        else:
+            # 局部控制模式：速度相对于机器人当前朝向
+            self.x += (self.vx * math.cos(self.yaw) - self.vy * math.sin(self.yaw)) * self.dt
+            self.y += (self.vx * math.sin(self.yaw) + self.vy * math.cos(self.yaw)) * self.dt
+            self.yaw += self.vz * self.dt
         
         # 处理角度环绕
         while self.yaw > math.pi:
@@ -139,6 +168,25 @@ class RobotSimulator(Node):
             'vy': self.vy,
             'vz': self.vz
         }
+    
+    def toggle_control_mode(self):
+        """切换控制模式"""
+        self.global_control_mode = not self.global_control_mode
+        mode_name = "Global" if self.global_control_mode else "Local"
+        self.get_logger().info(f'Switched to {mode_name} control mode')
+        
+    def set_control_mode(self, global_mode):
+        """设置控制模式"""
+        self.global_control_mode = global_mode
+        mode_name = "Global" if self.global_control_mode else "Local"
+        self.get_logger().info(f'Set to {mode_name} control mode')
+    
+    def set_control_mode_callback(self, request, response):
+        """服务回调函数：设置控制模式"""
+        self.set_control_mode(request.data)
+        response.success = True
+        response.message = f"Control mode set to {'Global' if self.global_control_mode else 'Local'}"
+        return response
 
 def main(args=None):
     rclpy.init(args=args)

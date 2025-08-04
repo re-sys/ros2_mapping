@@ -16,7 +16,7 @@ class AdvancedPIDController:
     简化的PID控制器类
     """
     
-    def __init__(self, kp=1.0, ki=0.0, kd=0.0, 
+    def __init__(self, kp=4.0, ki=1.0, kd=0.5, 
                  output_min=-float('inf'), output_max=float('inf'),
                  integral_min=-float('inf'), integral_max=float('inf'),
                  deadband=0.0, sample_time=0.05):
@@ -187,6 +187,7 @@ class PIDRotateShootNode(Node):
         # 初始化目标位姿
         self.goal_yaw = 0.0
         self.has_goal = False
+        self.target_goal_offset = 0.0  # 目标角度偏置
         
         # 创建PID控制器
         self.pid_controller = AdvancedPIDController(
@@ -223,6 +224,14 @@ class PIDRotateShootNode(Node):
             Bool,
             '/shoot_btn',
             self.shoot_btn_callback,
+            10
+        )
+        
+        # 订阅目标角度偏置话题
+        self.target_goal_sub = self.create_subscription(
+            Float32,
+            '/targetgoal',
+            self.target_goal_callback,
             10
         )
         
@@ -292,6 +301,11 @@ class PIDRotateShootNode(Node):
             self.pid_controller.sample_time = msg.data[8] if len(msg.data) > 8 else 0.05
             self.get_logger().info(f'PID deadband: {msg.data[7]:.3f}, sample_time: {msg.data[8] if len(msg.data) > 8 else 0.05:.3f}')
     
+    def target_goal_callback(self, msg):
+        """处理目标角度偏置消息"""
+        self.target_goal_offset = msg.data
+        self.get_logger().info(f'Target goal offset updated: {self.target_goal_offset:.3f} radians ({math.degrees(self.target_goal_offset):.2f}°)')
+    
     def shoot_btn_callback(self, msg):
         """处理shoot_btn消息，设置目标角度"""
         if msg.data:  # 当收到true时
@@ -306,7 +320,8 @@ class PIDRotateShootNode(Node):
     
     def get_goal(self):
         """计算目标角度"""
-        self.goal_yaw = math.atan2(-self.transformed_y, -self.transformed_x)
+        base_goal = math.atan2(-self.transformed_y, -self.transformed_x)
+        self.goal_yaw = base_goal + self.target_goal_offset
         self.has_goal = True
         # self.get_logger().info('Target yaw set to: {:.3f}°'.format(
         #     math.degrees(self.goal_yaw)),throttle_duration_sec=1)
@@ -373,6 +388,7 @@ class PIDRotateShootNode(Node):
         
         self.get_goal()
         # 检查是否到达目标角度
+        self.get_goal()
         error_yaw = self.calculate_error_yaw()
         if abs(error_yaw) < self.tol:
             self.left_reach_times -= 1

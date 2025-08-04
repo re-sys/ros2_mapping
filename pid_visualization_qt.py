@@ -266,16 +266,37 @@ class PlotWidget(QWidget):
         # Y轴
         painter.drawLine(50, 50, 50, self.height() - 50)
         
-        # 绘制标签
-        painter.setFont(QFont("Arial", 12))
-        painter.drawText(self.width() // 2, self.height() - 10, "Time")
-        painter.drawText(0, self.height() // 2, "Value")
+        # 绘制坐标轴标签
+        painter.setFont(QFont("Arial", 12, QFont.Bold))
+        
+        # X轴标签 - 时间
+        x_label = "Time (Data Points)"
+        x_label_width = painter.fontMetrics().width(x_label)
+        painter.drawText(self.width() // 2 - x_label_width // 2, self.height() - 10, x_label)
+        
+        # Y轴标签 - 向左偏移很多像素
+        y_label = "Value"
+        y_label_width = painter.fontMetrics().width(y_label)
+        # 向左偏移80像素，避免与Y轴重合
+        painter.drawText(10, self.height() // 2 + y_label_width // 2, y_label)
         
         # 绘制Y轴刻度
         painter.setFont(QFont("Arial", 10))
         for i in range(11):
             y = self.height() - 50 - i * (self.height() - 100) // 10
             value = self.y_min + i * (self.y_max - self.y_min) / 10
+            # 刻度值也向左偏移，避免与Y轴重合
+            painter.drawText(10, y + 5, f"{value:.3f}")
+        
+        # 绘制X轴刻度（数据点数量）
+        if self.error_yaw_data:
+            max_points = len(self.error_yaw_data)
+            # 每25个数据点显示一个刻度
+            step = max(1, max_points // 10)
+            for i in range(0, max_points, step):
+                if i < max_points:
+                    x = 50 + i * (self.width() - 100) / (max_points - 1) if max_points > 1 else 50
+                    painter.drawText(x - 15, self.height() - 30, str(i))
             painter.drawText(0, y + 5, f"{value:.3f}")
         
         # 绘制X轴刻度
@@ -426,6 +447,13 @@ class PIDVisualizationQtNode(Node):
             10
         )
         
+        # 发布targetgoal话题
+        self.target_goal_pub = self.create_publisher(
+            Float32,
+            '/targetgoal',
+            10
+        )
+        
         # 数据存储
         self.error_yaw = 0.0
         self.p_value = 0.0
@@ -486,6 +514,15 @@ class PIDVisualizationQtNode(Node):
         msg.data = [kp, ki, kd, output_min, output_max, integral_min, integral_max, deadband, sample_time]
         self.pid_params_pub.publish(msg)
         self.get_logger().info(f"发布PID参数: Kp={kp}, Ki={ki}, Kd={kd}, output_min={output_min}, output_max={output_max}, integral_min={integral_min}, integral_max={integral_max}, deadband={deadband}, sample_time={sample_time}")
+    
+    def publish_target_goal(self, offset_degrees):
+        """发布目标角度偏置"""
+        import math
+        offset_radians = math.radians(offset_degrees)
+        msg = Float32()
+        msg.data = offset_radians
+        self.target_goal_pub.publish(msg)
+        self.get_logger().info(f"发布目标角度偏置: {offset_degrees:.1f}° ({offset_radians:.3f} rad)")
 
 class MainWindow(QMainWindow):
     """主窗口"""
@@ -532,6 +569,13 @@ class MainWindow(QMainWindow):
         # Shoot按钮组
         shoot_group = QGroupBox("Shoot Control")
         shoot_layout = QVBoxLayout()
+        
+        # 目标角度偏置输入框
+        shoot_layout.addWidget(QLabel("目标角度偏置 (度):"))
+        self.target_goal_input = QLineEdit("0.0")
+        self.target_goal_input.setMinimumHeight(30)
+        self.target_goal_input.setPlaceholderText("输入角度偏置，正值顺时针，负值逆时针")
+        shoot_layout.addWidget(self.target_goal_input)
         
         self.shoot_button = QPushButton("Shoot")
         self.shoot_button.setMinimumHeight(40)
@@ -643,6 +687,23 @@ class MainWindow(QMainWindow):
     def on_shoot_clicked(self):
         """处理Shoot按钮点击"""
         if self.ros_thread and self.ros_thread.node:
+            try:
+                # 获取目标角度偏置
+                offset_degrees = float(self.target_goal_input.text())
+                
+                # 发布目标角度偏置
+                self.ros_thread.node.publish_target_goal(offset_degrees)
+                
+                # 发布发射按钮信号
+                self.ros_thread.node.publish_shoot_btn()
+                
+                # 开始数据采集
+                self.plot_widget.start_collection()
+                self.status_label.setText(f"Shoot triggered with offset: {offset_degrees:.1f}°, collecting 150 data points...")
+                
+            except ValueError:
+                self.status_label.setText("错误：请输入有效的角度偏置数字")
+                return
             self.ros_thread.node.publish_shoot_btn()
             self.status_label.setText("Shoot button clicked, waiting for shoot_btn message...")
     

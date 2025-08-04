@@ -3,8 +3,11 @@
 import rclpy
 from rclpy.node import Node
 from geometry_msgs.msg import Vector3, PoseStamped, Twist, PoseArray
+from geometry_msgs.msg import Vector3, PoseStamped, Twist, PoseArray
 from std_msgs.msg import Bool
 from visualization_msgs.msg import Marker, MarkerArray
+from nav_msgs.msg import Odometry
+from geometry_msgs.msg import PoseWithCovarianceStamped
 from nav_msgs.msg import Odometry
 from geometry_msgs.msg import PoseWithCovarianceStamped
 import yaml
@@ -13,7 +16,9 @@ import os
 import time
 
 class MultiPointPositionController(Node):
+class MultiPointPositionController(Node):
     def __init__(self):
+        super().__init__('multi_point_position_controller')
         super().__init__('multi_point_position_controller')
         
         # 初始化参数
@@ -32,6 +37,7 @@ class MultiPointPositionController(Node):
         self.moving = False  # 是否正在移动
         self.move_start_time = 0.0  # 移动开始时间
         self.move_delay = 1.0  # shoot_btn后等待时间
+        self.sequence_completed = False  # 序列是否完成
         self.sequence_completed = False  # 序列是否完成
         
         # 控制参数
@@ -96,6 +102,7 @@ class MultiPointPositionController(Node):
         self.marker_pub = self.create_publisher(
             MarkerArray,
             '/waypoint_markers',
+            '/waypoint_markers',
             10
         )
         
@@ -103,7 +110,7 @@ class MultiPointPositionController(Node):
         self.control_timer = self.create_timer(0.05, self.control_callback)
         
         # Marker更新定时器
-        self.marker_timer = self.create_timer(1.0, self.update_markers)
+        self.marker_timer = self.create_timer(0.5, self.update_markers)
         
         self.get_logger().info('Multi-Point Position Controller initialized')
         self.get_logger().info(f'Waypoints: {len(self.waypoints)} points')
@@ -264,12 +271,17 @@ class MultiPointPositionController(Node):
     
     def calculate_error_yaw(self, target_yaw):
         """计算角度误差"""
+        """计算角度误差"""
         current_yaw = self.current_position.z
+        target_yaw = target_yaw
         target_yaw = target_yaw
         
         # 处理角度跨越±π的情况
         while current_yaw - target_yaw > math.pi:
+        # 处理角度跨越±π的情况
+        while current_yaw - target_yaw > math.pi:
             current_yaw -= 2 * math.pi
+        while current_yaw - target_yaw < -math.pi:
         while current_yaw - target_yaw < -math.pi:
             current_yaw += 2 * math.pi
             
@@ -291,6 +303,19 @@ class MultiPointPositionController(Node):
         return distance < self.position_tolerance and abs(error_yaw) < self.yaw_tolerance
     
     def control_callback(self):
+        """控制回调函数"""
+        if not self.map_origin_set or not self.moving or self.sequence_completed:
+            return
+            
+        # 检查移动延迟
+        if time.time() - self.move_start_time < self.move_delay:
+            return
+            
+        # 检查是否还有目标点
+        if self.current_target_index >= len(self.target_positions):
+            self.sequence_completed = True
+            self.moving = False
+            self.get_logger().info('Navigation sequence completed!')
         """控制回调函数"""
         if not self.map_origin_set or not self.moving or self.sequence_completed:
             return
@@ -410,10 +435,13 @@ class MultiPointPositionController(Node):
         marker.header.frame_id = "camera_init"
         marker.header.stamp = self.get_clock().now().to_msg()
         marker.ns = "waypoints"
+        marker.ns = "waypoints"
         marker.id = marker_id
-        marker.type = Marker.ARROW
+        marker.type = Marker.SPHERE
         marker.action = Marker.ADD
         
+        marker.pose.position.x = position[0]
+        marker.pose.position.y = position[1]
         marker.pose.position.x = position[0]
         marker.pose.position.y = position[1]
         marker.pose.position.z = 0.0
@@ -440,6 +468,8 @@ class MultiPointPositionController(Node):
             marker.color.r = 0.0
             marker.color.g = 0.0
             marker.color.b = 1.0
+        
+        marker.color.a = 1.0
         
         marker.color.a = 1.0
         return marker
@@ -473,9 +503,11 @@ class MultiPointPositionController(Node):
         marker_array = MarkerArray()
         
         # 删除旧的标记
+        # 删除旧的标记
         delete_marker = Marker()
         delete_marker.header.frame_id = "camera_init"
         delete_marker.header.stamp = self.get_clock().now().to_msg()
+        delete_marker.ns = "waypoints"
         delete_marker.ns = "waypoints"
         delete_marker.action = Marker.DELETEALL
         marker_array.markers.append(delete_marker)
@@ -491,6 +523,7 @@ class MultiPointPositionController(Node):
             marker_array.markers.append(marker)
         
         # 发布标记
+        # 发布标记
         self.marker_pub.publish(marker_array)
         
         # 输出调试信息
@@ -498,6 +531,7 @@ class MultiPointPositionController(Node):
 
 def main(args=None):
     rclpy.init(args=args)
+    node = MultiPointPositionController()
     node = MultiPointPositionController()
     
     try:
