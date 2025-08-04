@@ -63,7 +63,7 @@ class AdvancedPIDController:
         self.output_history = deque(maxlen=10)
         
         # 自适应参数
-        self.adaptive_mode = False
+        self.adaptive_mode = True
         self.error_threshold = 0.1
         self.adaptive_kp_multiplier = 1.0
         self.first_loop = True
@@ -82,6 +82,9 @@ class AdvancedPIDController:
             d_term: 微分项
         """
         current_time = time.time()
+        if self.first_loop:
+            self.last_error = error
+            self.first_loop = False
         
         # 死区处理
         if abs(error) < self.deadband:
@@ -90,9 +93,10 @@ class AdvancedPIDController:
         # 自适应参数调整
         if self.adaptive_mode:
             if abs(error) > self.error_threshold:
-                self.adaptive_kp_multiplier = min(2.0, self.adaptive_kp_multiplier * 1.1)
+                self.adaptive_kp_multiplier = min(1., self.adaptive_kp_multiplier * 1.1)
             else:
-                self.adaptive_kp_multiplier = max(0.5, self.adaptive_kp_multiplier * 0.95)
+                self.adaptive_kp_multiplier = max(0.7, self.adaptive_kp_multiplier * 0.95)
+                print(f'adaptive_kp_multiplier: {self.adaptive_kp_multiplier:.4f}')
         
         # 计算时间间隔
         if self.last_time is None:
@@ -122,10 +126,10 @@ class AdvancedPIDController:
         else:
             derivative = 0.0
         d_term = self.kd * derivative
-        if self.first_loop:
-            d_term = 0.0
-            # print(f'd_term: {d_term:.4f},kd={self.kd:.4f}')
-            self.first_loop = False
+        # if self.first_loop:
+        #     d_term = 0.0
+        #     # print(f'd_term: {d_term:.4f},kd={self.kd:.4f}')
+        #     self.first_loop = False
         
         # 计算总输出
         output = p_term + i_term + d_term
@@ -166,7 +170,7 @@ class PIDRotateShootNode(Node):
         # 初始化坐标变换参数
         self.transform_params = [0.0, 0.0, 0.0]  # [x_offset, y_offset, yaw_rotation]
         self.tol = 0.01
-        self.max_check_times = 2
+        self.max_check_times = 10
         
         # 初始化变换后的坐标
         self.transformed_x = 0.0
@@ -185,10 +189,10 @@ class PIDRotateShootNode(Node):
         
         # 创建PID控制器
         self.pid_controller = AdvancedPIDController(
-            kp=5.0, ki=0.0, kd=0.2,
+            kp=5.0, ki=0.1, kd=0.1,
             output_min=-2.2, output_max=2.2,
             integral_min=-1.0,integral_max=1.0,
-            deadband=0.001,
+            deadband=0.000,
             sample_time=0.05
         )
         
@@ -294,7 +298,6 @@ class PIDRotateShootNode(Node):
             distance = math.sqrt(self.transformed_x**2 + self.transformed_y**2)
             # 正常模式：将当前goal_pose的角度设为目标
             self.get_goal()
-            
             self.pid_controller.first_loop = True
             self.left_reach_times = self.max_check_times
             print(f"elf.left_reach_times{self.left_reach_times}")
@@ -305,7 +308,7 @@ class PIDRotateShootNode(Node):
         self.goal_yaw = math.atan2(-self.transformed_y, -self.transformed_x)
         self.has_goal = True
         self.get_logger().info('Target yaw set to: {:.3f}°'.format(
-            math.degrees(self.goal_yaw)))
+            math.degrees(self.goal_yaw)),throttle_duration_sec=1)
     
     def calculate_error_yaw(self):
         """计算角度误差"""
@@ -366,16 +369,16 @@ class PIDRotateShootNode(Node):
         if not self.has_goal:
             return
         
+        self.get_goal()
         # 检查是否到达目标角度
         error_yaw = self.calculate_error_yaw()
         if abs(error_yaw) < self.tol:
             self.left_reach_times -= 1
-            self.get_goal()
-            self.compute_pid_and_publish()
-            self.get_logger().info(f'Left reach times: {self.left_reach_times}')
+            self.cmd_vel_pub.publish(Twist())
+            # self.compute_pid_and_publish()
+            self.get_logger().info(f'Left reach times: {self.left_reach_times},current_yaw: {self.transformed_yaw:.4f},goal_yaw: {self.goal_yaw:.4f}')
         else:
             self.left_reach_times = self.max_check_times
-            self.get_goal()
             self.get_logger().info(f'error_yaw: {error_yaw:.4f}', throttle_duration_sec=1.0)
             self.compute_pid_and_publish()
         

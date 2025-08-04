@@ -27,8 +27,8 @@ class PointCloudCircleDetector(Node):
         )
         
         # 空间滤波参数
-        self.x_range = (-1.0, 1.0)      # x轴范围
-        self.y_range = (-3.0, -2.0)     # y轴范围  
+        self.x_range = (2.5, 3.5)      # x轴范围
+        self.y_range = (-0.3, 0.9)     # y轴范围  
         self.z_range = (0.0, 2.0)       # z轴范围
         
         # 圆形检测参数
