@@ -254,11 +254,11 @@ class OdomToMapConverter(Node):
         
         # 控制参数        
         self.visual_yaw = 0.0
-        self.rpm_offset_y =80.0
+
         self.x_visual = 0.0
         self.y_visual = 0.0
         self.z_visual = 0.0
-        self.offset = 0.15
+        self.offset = 0.03
         self.delta_offset = 0.0
         self.last_rpm_value = 0.0
         self.x_seg_low = 2.6
