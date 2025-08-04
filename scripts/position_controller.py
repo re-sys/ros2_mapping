@@ -42,6 +42,9 @@ class MultiPointPositionController(Node):
         self.kp_angular = 2.0  # 角速度比例系数
         self.max_angular_vel = 2.2  # 最大角速度
         
+        # 控制模式选择
+        self.use_global_control = True  # True: 全局控制底盘, False: 局部控制底盘
+        
         # 预定义的目标点位（在initialpose坐标系下）
         self.waypoints = [
             (2.0, 0.0, 0.0),    # 前方2m
@@ -104,6 +107,8 @@ class MultiPointPositionController(Node):
         
         self.get_logger().info('Multi-Point Position Controller initialized')
         self.get_logger().info(f'Waypoints: {len(self.waypoints)} points')
+        control_mode = "Global" if self.use_global_control else "Local"
+        self.get_logger().info(f'Control mode: {control_mode}')
         self.get_logger().info('Waiting for initialpose to start...')
         
     def initialpose_callback(self, msg):
@@ -349,21 +354,46 @@ class MultiPointPositionController(Node):
         # 创建cmd_vel消息
         cmd_vel = Twist()
         
-        # 线速度控制（基于距离，沿着camera_init的xy轴）
-        linear_vel_x = self.kp_linear * dx
-        linear_vel_y = self.kp_linear * dy
-        
-        # 限制线速度
-        linear_vel_x = max(-self.max_linear_vel, min(self.max_linear_vel, linear_vel_x))
-        linear_vel_y = max(-self.max_linear_vel, min(self.max_linear_vel, linear_vel_y))
+        if self.use_global_control:
+            # 全局控制模式：沿着camera_init的xy轴
+            linear_vel_x = self.kp_linear * dx
+            linear_vel_y = self.kp_linear * dy
+            
+            # 限制线速度
+            linear_vel_x = max(-self.max_linear_vel, min(self.max_linear_vel, linear_vel_x))
+            linear_vel_y = max(-self.max_linear_vel, min(self.max_linear_vel, linear_vel_y))
+            
+            # 设置速度
+            cmd_vel.linear.x = linear_vel_x
+            cmd_vel.linear.y = linear_vel_y
+            
+        else:
+            # 局部控制模式：x速度方向与当前朝向一致
+            current_yaw = self.current_position.z
+            
+            # 计算目标角度（从当前位置到目标点的角度）
+            target_angle = math.atan2(dy, dx)
+            
+            # 计算角度差
+            angle_diff = target_angle - current_yaw
+            
+            # 处理角度跨越±π的情况
+            while angle_diff > math.pi:
+                angle_diff -= 2 * math.pi
+            while angle_diff < -math.pi:
+                angle_diff += 2 * math.pi
+            
+            # 计算线速度（沿着当前朝向）
+            linear_vel = self.kp_linear * distance
+            linear_vel = min(linear_vel, self.max_linear_vel)
+            
+            # 设置速度（x方向为前进方向，y方向为侧向）
+            cmd_vel.linear.x = linear_vel * math.cos(angle_diff)
+            cmd_vel.linear.y = linear_vel * math.sin(angle_diff)
         
         # 角速度控制（基于角度误差，只使用kp）
         angular_vel = self.kp_angular * error_yaw
         angular_vel = max(-self.max_angular_vel, min(self.max_angular_vel, angular_vel))
-        
-        # 设置速度
-        cmd_vel.linear.x = linear_vel_x
-        cmd_vel.linear.y = linear_vel_y
         cmd_vel.angular.z = angular_vel
         
         # 发布控制命令
@@ -371,7 +401,8 @@ class MultiPointPositionController(Node):
         
         # 输出调试信息
         if self.current_target_index % 10 == 0:  # 每10次输出一次
-            self.get_logger().info(f'Target {self.current_target_index + 1}: distance={distance:.2f}m, angle_error={math.degrees(error_yaw):.1f}°')
+            control_mode = "Global" if self.use_global_control else "Local"
+            self.get_logger().info(f'Target {self.current_target_index + 1} ({control_mode}): distance={distance:.2f}m, angle_error={math.degrees(error_yaw):.1f}°')
     
     def create_waypoint_marker(self, position, marker_id, is_current_target=False):
         """创建路径点标记"""

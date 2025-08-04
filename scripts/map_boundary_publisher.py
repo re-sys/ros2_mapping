@@ -39,8 +39,8 @@ class MapBoundaryPublisher(Node):
         )
         
         # 边界参数
-        self.y_length = 15.0  # Y轴方向长边：-7.5到7.5m
-        self.x_length = 8.0   # X轴方向短边：0到8m
+        self.y_length = 8.0  # Y轴方向长边：-7.5到7.5m
+        self.x_length = 15.0   # X轴方向短边：0到8m
         self.arc_radius = 2.0  # 半圆弧半径：2m
         
         # 初始化标志
