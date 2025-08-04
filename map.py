@@ -87,7 +87,8 @@ class AdvancedPIDController:
         # 自适应参数调整
         if self.adaptive_mode:
             if abs(error) > self.error_threshold:
-                self.adaptive_kp_multiplier = min(1.0, self.adaptive_kp_multiplier * 1.1)
+                self.adaptive_kp_multiplier = 1
+                self.integral = 0.0
             else:
                 self.adaptive_kp_multiplier = max(0.7, self.adaptive_kp_multiplier * 0.95)
         
@@ -112,14 +113,9 @@ class AdvancedPIDController:
         # 微分项
         if dt > 0:
             derivative = (error - self.last_error) / dt
-            # 微分滤波
-            #if self.derivative_filter and len(self.error_history) > 0:
-            #    derivative = self.filter_alpha * derivative + (1 - self.filter_alpha) * self.last_output
         else:
             derivative = 0.0
         d_term = self.kd * derivative
-
-        
         # 计算总输出
         output = p_term + i_term + d_term
         

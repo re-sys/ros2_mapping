@@ -2,72 +2,83 @@
 
 import rclpy
 from rclpy.node import Node
-from geometry_msgs.msg import Vector3, PoseStamped, Twist
+from geometry_msgs.msg import Vector3, PoseStamped, Twist, PoseArray
 from std_msgs.msg import Bool
 from visualization_msgs.msg import Marker, MarkerArray
+from nav_msgs.msg import Odometry
+from geometry_msgs.msg import PoseWithCovarianceStamped
 import yaml
 import math
 import os
 import time
 
-class PositionController(Node):
+class MultiPointPositionController(Node):
     def __init__(self):
-        super().__init__('position_controller')
+        super().__init__('multi_point_position_controller')
         
         # 初始化参数
         self.current_position = Vector3()  # 当前位置 (x, y, yaw)
         self.target_positions = []  # 目标位置列表
         self.current_target_index = 0  # 当前目标索引
-        self.position_tolerance = 0.2  # 位置到达容差
+        self.position_tolerance = 0.1  # 位置到达容差
+        self.yaw_tolerance = 0.1  # 角度到达容差
         
         # 坐标变换参数
-        self.transform_params = [0.0, 0.0, 0.0]  # [x_offset, y_offset, yaw_rotation]
+        self.transform_params = [0.0, 0.0, 0.0]  # [x_offset, y_offset, yaw_rotation] - camera_init到map
+        self.inverse_transform_params = [0.0, 0.0, 0.0]  # [x_offset, y_offset, yaw_rotation] - map到camera_init
+        self.map_origin_set = False  # map原点是否已设置
         
         # 移动控制参数
         self.moving = False  # 是否正在移动
         self.move_start_time = 0.0  # 移动开始时间
         self.move_delay = 1.0  # shoot_btn后等待时间
+        self.sequence_completed = False  # 序列是否完成
         
         # 控制参数
         self.kp_linear = 2.0  # 线速度比例系数
-        self.max_linear_vel = 7.0  # 最大线速度
+        self.max_linear_vel = 1.5  # 最大线速度
         
         # 角度控制参数
-        self.use_angular_control = False  # 是否使用角度闭环控制
-        self.kp_angular = 4.0  # 角速度比例系数
-        self.kd_angular = 1.0  # 角速度微分系数
+        self.kp_angular = 2.0  # 角速度比例系数
         self.max_angular_vel = 2.2  # 最大角速度
-        self.last_error_yaw = 0.0  # 上次角度误差
         
-        # 从yaml文件加载目标位置列表
-        self.load_target_positions()
+        # 预定义的目标点位（在initialpose坐标系下）
+        self.waypoints = [
+            (2.0, 0.0, 0.0),    # 前方2m
+            (4.0, 2.0, 0.0),    # 右前方
+            (4.0, -2.0, 0.0),   # 左前方
+            (6.0, 0.0, 0.0),    # 前方6m
+            (2.0, 0.0, 0.0),    # 回到前方2m
+        ]
         
         # 订阅者
-        self.transformed_sub = self.create_subscription(
-            Vector3,
-            '/transformedxyyaw',
-            self.transformed_callback,
+        self.odom_sub = self.create_subscription(
+            Odometry,
+            '/Odometry',
+            self.odom_callback,
             10
         )
         
-        self.transformed_params_sub = self.create_subscription(
-            Vector3,
-            '/transformed_params',
-            self.transformed_params_callback,
+        self.initialpose_sub = self.create_subscription(
+            PoseWithCovarianceStamped,
+            '/initialpose',
+            self.initialpose_callback,
+            10
+        )
+        self.get_logger().info('Initialpose subscriber created')
+        
+        self.shoot_btn_sub = self.create_subscription(
+            Bool,
+            '/position_btn',
+            self.shoot_btn_callback,
             10
         )
         
+        # 订阅goalpose话题
         self.goalpose_sub = self.create_subscription(
             PoseStamped,
             '/goal_pose',
             self.goalpose_callback,
-            10
-        )
-        
-        self.shoot_btn_sub = self.create_subscription(
-            Bool,
-            '/shoot_btn',
-            self.shoot_btn_callback,
             10
         )
         
@@ -81,7 +92,7 @@ class PositionController(Node):
         # Marker发布者
         self.marker_pub = self.create_publisher(
             MarkerArray,
-            '/target_markers',
+            '/waypoint_markers',
             10
         )
         
@@ -91,168 +102,170 @@ class PositionController(Node):
         # Marker更新定时器
         self.marker_timer = self.create_timer(1.0, self.update_markers)
         
-        self.get_logger().info('Position Controller initialized')
-        self.get_logger().info(f'Loaded {len(self.target_positions)} target positions from config')
-        self.get_logger().info(f'Angular control: {"ON" if self.use_angular_control else "OFF"}')
+        self.get_logger().info('Multi-Point Position Controller initialized')
+        self.get_logger().info(f'Waypoints: {len(self.waypoints)} points')
+        self.get_logger().info('Waiting for initialpose to start...')
         
-    def toggle_angular_control(self):
-        """切换角度控制模式"""
-        self.use_angular_control = not self.use_angular_control
-        self.get_logger().info(f'Angular control {"ENABLED" if self.use_angular_control else "DISABLED"}')
+    def initialpose_callback(self, msg):
+        """处理initialpose消息，设置map坐标系原点"""
+        self.get_logger().info('Received initialpose message!')
         
-    def set_angular_control(self, enabled):
-        """设置角度控制模式"""
-        self.use_angular_control = enabled
-        self.get_logger().info(f'Angular control {"ENABLED" if self.use_angular_control else "DISABLED"}')
+        # 提取initialpose的位置和姿态
+        map_origin_x = msg.pose.pose.position.x
+        map_origin_y = msg.pose.pose.position.y
+        map_origin_yaw = self.quaternion_to_yaw(msg.pose.pose.orientation)
         
-    def load_target_positions(self):
-        """从yaml文件加载目标位置列表"""
-        config_file = os.path.join(os.path.dirname(__file__), 'target_positions.yaml')
+        self.get_logger().info(f'Initialpose data: x={map_origin_x:.3f}, y={map_origin_y:.3f}, yaw={math.degrees(map_origin_yaw):.2f}°')
         
-        if os.path.exists(config_file):
-            try:
-                with open(config_file, 'r') as file:
-                    config = yaml.safe_load(file)
-                    positions = config.get('target_positions', [])
-                    
-                    for pos in positions:
-                        target = Vector3()
-                        target.x = pos.get('x', 0.0)
-                        target.y = pos.get('y', 0.0)
-                        target.z = pos.get('yaw', 0.0)  # z存储yaw角度
-                        self.target_positions.append(target)
-                        
-                self.get_logger().info(f'Successfully loaded {len(self.target_positions)} positions from {config_file}')
-            except Exception as e:
-                self.get_logger().warn(f'Failed to load config file: {e}')
-        else:
-            self.get_logger().info(f'Config file not found: {config_file}, starting with empty position list')
-    
-    def transformed_callback(self, msg):
-        """处理当前位置信息"""
-        self.current_position = msg
-    def inverse_transform(self,x,y,yaw):
-
-        yaw = -yaw
-        cos_yaw = math.cos(yaw)
-        sin_yaw = math.sin(yaw)
-        rotated_x = -(x * cos_yaw - y * sin_yaw)
-        rotated_y = -(x * sin_yaw + y * cos_yaw)
-        return rotated_x,rotated_y,yaw    
-
-    def transformed_params_callback(self, msg):
-        """处理坐标变换参数"""
-        self.transform_params[0] = msg.x
-        self.transform_params[1] = msg.y
-        self.transform_params[2] = msg.z
+        # 计算从map原点到当前odom坐标系的变换参数
+        rotated_x, rotated_y, yaw = self.inverse_transform(map_origin_x, map_origin_y, map_origin_yaw)
+        self.transform_params[0] = rotated_x
+        self.transform_params[1] = rotated_y
+        self.transform_params[2] = yaw
         
-        # 重新变换所有目标位置
-        self.transform_all_targets()
+        # 计算map到camera_init的变换参数（逆变换）
+        # 这里需要计算从map坐标系到camera_init坐标系的变换
+        # 由于initialpose给出的是map原点在camera_init坐标系下的位置
+        # 所以map到camera_init的变换就是减去这个偏移，然后旋转-角度
+        self.inverse_transform_params[0] = map_origin_x
+        self.inverse_transform_params[1] = map_origin_y
+        self.inverse_transform_params[2] = map_origin_yaw
         
-        # 重新发布marker
+        self.map_origin_set = True
+        
+        # 初始化目标位置列表
+        self.target_positions = self.waypoints.copy()
+        
+        # 立即更新marker显示
         self.update_markers()
         
-    def goalpose_callback(self, msg):
-        """处理新的目标位姿，添加到位置列表"""
-        target = Vector3()
-        target.x = msg.pose.position.x
-        target.y = msg.pose.position.y
-        
-        # 从四元数提取yaw角
-        orientation = msg.pose.orientation
-        siny_cosp = 2 * (orientation.w * orientation.z + orientation.x * orientation.y)
-        cosy_cosp = 1 - 2 * (orientation.y * orientation.y + orientation.z * orientation.z)
-        target.z = math.atan2(siny_cosp, cosy_cosp)
-
-        self.inverse_transform_params = self.inverse_transform(self.transform_params[0],self.transform_params[1],self.transform_params[2])
-
-        self.target_positions.append(target)
-        
-        # 保存原始目标位置
-        if not hasattr(self, 'original_targets'):
-            self.original_targets = []
-        original = Vector3()
-        transformed_x,transformed_y,transformed_yaw = self.inverse_transform_point(target.x,target.y,target.z)
-        original.x = transformed_x  # 保存原始坐标
-        original.y = transformed_y
-        original.z = transformed_yaw
-        # self.get_logger().info(f'original_target: {target},original_in_map: {original}')
-        # self.get_logger().info(f'inverse_transform_params: {self.inverse_transform_params}')
-        self.original_targets.append(original)
-        
-        # self.get_logger().info(f'Added new target position (transformed): x={target.x:.3f}, y={target.y:.3f}, yaw={math.degrees(target.z):.2f}°')
-        # self.get_logger().info(f'Total target positions: {len(self.target_positions)}')
-    def inverse_transform_point(self,x,y,yaw):
-        cos_yaw = math.cos(self.inverse_transform_params[2])
-        sin_yaw = math.sin(self.inverse_transform_params[2])
-        rotated_x = x * cos_yaw - y * sin_yaw
-        rotated_y = x * sin_yaw + y * cos_yaw
-        transformed_x = rotated_x + self.inverse_transform_params[0]
-        transformed_y = rotated_y + self.inverse_transform_params[1]
-        transformed_yaw = yaw + self.inverse_transform_params[2]
-
-        return transformed_x,transformed_y,transformed_yaw
-
-    def transform_all_targets(self):
-        """重新变换所有目标位置"""
-        if not self.target_positions:
+        self.get_logger().info('Map origin set from initialpose')
+        self.get_logger().info(f'Transform params: x={self.transform_params[0]:.3f}, y={self.transform_params[1]:.3f}, yaw={math.degrees(self.transform_params[2]):.2f}°')
+        self.get_logger().info('Ready to start waypoint navigation')
+    
+    def odom_callback(self, msg):
+        """处理Odometry消息并进行坐标转换"""
+        if not self.map_origin_set:
             return
             
-        # 保存原始目标位置（如果还没有保存的话）
-        if not hasattr(self, 'original_targets'):
-            self.original_targets = []
-            for target in self.target_positions:
-                original = Vector3()
-                original.x = target.x
-                original.y = target.y
-                original.z = target.z
-                self.original_targets.append(original)
+        # 提取原始位姿（在camera_init坐标系下）
+        self.current_position.x = msg.pose.pose.position.x
+        self.current_position.y = msg.pose.pose.position.y
+        self.current_position.z = self.quaternion_to_yaw(msg.pose.pose.orientation)
+    
+    def transform_map_to_camera_init(self, map_x, map_y, map_yaw):
+        """坐标变换：从map坐标系到camera_init坐标系"""
+        # 1. 先旋转（绕原点旋转）
+        cos_yaw = math.cos(self.inverse_transform_params[2])
+        sin_yaw = math.sin(self.inverse_transform_params[2])
         
-        # 重新变换所有目标位置
-        for i, original_target in enumerate(self.original_targets):
-            # 应用坐标变换
-            # 1. 先旋转
-            cos_yaw = math.cos(self.transform_params[2])
-            sin_yaw = math.sin(self.transform_params[2])
-            
-            rotated_x = original_target.x * cos_yaw - original_target.y * sin_yaw
-            rotated_y = original_target.x * sin_yaw + original_target.y * cos_yaw
-            self.get_logger().info(f'rotated_x: {rotated_x}, rotated_y: {rotated_y}')
-            self.get_logger().info(f'transform_params: {self.transform_params}')
-            self.get_logger().info(f'original_target: {original_target}')
-            # 2. 再平移
-            transformed_x = rotated_x + self.transform_params[0]
-            transformed_y = rotated_y + self.transform_params[1]
-            
-            # 3. 更新yaw角
-            transformed_yaw = original_target.z + self.transform_params[2]
-            
-            # 更新目标位置
-            self.target_positions[i].x = transformed_x
-            self.target_positions[i].y = transformed_y
-            self.target_positions[i].z = transformed_yaw
-            
-        self.get_logger().info(f'Transformed {len(self.target_positions)} target positions with new transform parameters')
+        rotated_x = map_x * cos_yaw - map_y * sin_yaw
+        rotated_y = map_x * sin_yaw + map_y * cos_yaw
         
+        # 2. 再平移
+        translated_x = rotated_x + self.inverse_transform_params[0]
+        translated_y = rotated_y + self.inverse_transform_params[1]
+        
+        # 3. 更新yaw角
+        translated_yaw = map_yaw + self.inverse_transform_params[2]
+        
+        return translated_x, translated_y, translated_yaw
+    
+    def transform_camera_init_to_map(self, camera_x, camera_y, camera_yaw):
+        """坐标变换：从camera_init坐标系到map坐标系"""
+        # 1. 先旋转
+        cos_yaw = math.cos(self.transform_params[2])
+        sin_yaw = math.sin(self.transform_params[2])
+        
+
+        rotated_x = camera_x * cos_yaw - camera_y * sin_yaw
+        rotated_y = camera_x * sin_yaw + camera_y * cos_yaw
+        # 2. 再平移
+        translated_x = rotated_x + self.transform_params[0]
+        translated_y = rotated_y + self.transform_params[1]
+        
+        # 3. 更新yaw角
+        rotated_yaw = camera_yaw + self.transform_params[2]
+        
+        
+        return translated_x, translated_y, rotated_yaw
+    
+    def inverse_transform(self, x, y, yaw):
+        """逆变换"""
+        neg_yaw = -yaw
+        cos_yaw = math.cos(neg_yaw)
+        sin_yaw = math.sin(neg_yaw)
+        rotated_x = -(x * cos_yaw - y * sin_yaw)
+        rotated_y = -(x * sin_yaw + y * cos_yaw)
+        return rotated_x, rotated_y, neg_yaw
+    
+    def quaternion_to_yaw(self, quaternion):
+        """从四元数提取yaw角"""
+        siny_cosp = 2 * (quaternion.w * quaternion.z + quaternion.x * quaternion.y)
+        cosy_cosp = 1 - 2 * (quaternion.y * quaternion.y + quaternion.z * quaternion.z)
+        yaw = math.atan2(siny_cosp, cosy_cosp)
+        return yaw
+    
     def shoot_btn_callback(self, msg):
-        """处理shoot_btn状态"""
-        # 只要收到shoot_btn消息就移动到下一个目标
-        if self.current_target_index < len(self.target_positions) - 1:
-            self.current_target_index += 1
-            self.move_start_time = time.time()
-            self.moving = True
-            self.get_logger().info(f'Moving to next target: {self.current_target_index + 1}/{len(self.target_positions)}')
-        else:
-            self.get_logger().info('Reached last target position')
+        """处理shoot_btn消息，移动到下一个目标点"""
+        if not self.map_origin_set:
+            self.get_logger().warn('Map origin not set yet, cannot start navigation')
+            return
+            
+        if msg.data:
+            if self.sequence_completed:
+                # 重置序列
+                self.current_target_index = 0
+                self.sequence_completed = False
+                self.moving = False
+                self.get_logger().info('Navigation sequence reset')
+            else:
+                # 移动到下一个目标点
+                if self.current_target_index < len(self.target_positions):
+                    self.moving = True
+                    self.move_start_time = time.time()
+                    current_target = self.target_positions[self.current_target_index]
+                    self.get_logger().info(f'Moving to waypoint {self.current_target_index + 1}: ({current_target[0]:.2f}, {current_target[1]:.2f})')
+                else:
+                    self.get_logger().info('No more waypoints to visit')
+    
+    def goalpose_callback(self, msg):
+        """处理goalpose消息，添加新的目标点"""
+        if not self.map_origin_set:
+            self.get_logger().warn('Map origin not set yet, cannot add goal pose')
+            return
+            
+        # 提取goalpose的位置和姿态（在camera_init坐标系下）
+        goal_x = msg.pose.position.x
+        goal_y = msg.pose.position.y
+        goal_yaw = self.quaternion_to_yaw(msg.pose.orientation)
         
+        # 将camera_init坐标系下的目标点转换到map坐标系
+        map_x, map_y, map_yaw = self.transform_camera_init_to_map(goal_x, goal_y, goal_yaw)
+        
+        # 添加到目标位置列表
+        new_waypoint = (map_x, map_y, map_yaw)
+        self.target_positions.append(new_waypoint)
+        
+        # 打印坐标信息
+        self.get_logger().info(f'Added new waypoint:')
+        self.get_logger().info(f'  Camera_init coordinates: x={goal_x:.3f}, y={goal_y:.3f}, yaw={math.degrees(goal_yaw):.2f}°')
+        self.get_logger().info(f'  Map coordinates: x={map_x:.3f}, y={map_y:.3f}, yaw={math.degrees(map_yaw):.2f}°')
+        self.get_logger().info(f'  transformed_map_x={self.transform_params[0]:.3f}, y={self.transform_params[1]:.3f}, yaw={math.degrees(self.transform_params[2]):.2f}°')
+        self.get_logger().info(f'Total waypoints: {len(self.target_positions)}')
+        
+        # 更新marker显示
+        self.update_markers()
+    
     def calculate_error_yaw(self, target_yaw):
-        """计算角度误差（仿照rotate_shoot的逻辑）"""
+        """计算角度误差"""
         current_yaw = self.current_position.z
+        target_yaw = target_yaw
         
-        # 处理角度环绕
-        if (current_yaw - target_yaw) > math.pi:
+        # 处理角度跨越±π的情况
+        while current_yaw - target_yaw > math.pi:
             current_yaw -= 2 * math.pi
-        elif (current_yaw - target_yaw) < -math.pi:
+        while current_yaw - target_yaw < -math.pi:
             current_yaw += 2 * math.pi
             
         error_yaw = target_yaw - current_yaw
@@ -260,184 +273,201 @@ class PositionController(Node):
     
     def is_position_reached(self, target):
         """检查是否到达目标位置"""
-        if not self.current_position:
-            return False
-            
-        # 计算位置距离
-        dx = target.x - self.current_position.x
-        dy = target.y - self.current_position.y
+        # 将map坐标系下的目标点转换到camera_init坐标系
+        target_camera_x, target_camera_y, target_camera_yaw = self.transform_map_to_camera_init(target[0], target[1], target[2])
+        
+        dx = target_camera_x - self.current_position.x
+        dy = target_camera_y - self.current_position.y
         distance = math.sqrt(dx*dx + dy*dy)
         
-        # 根据是否使用角度控制来决定检查条件
-        if self.use_angular_control:
-            # 计算角度误差
-            error_yaw = self.calculate_error_yaw(target.z)
-            angle_diff = abs(error_yaw)
-            return distance < self.position_tolerance and angle_diff < 0.1  # 角度容差0.1弧度
-        else:
-            # 只检查位置距离，不检查角度
-            return distance < self.position_tolerance
+        # 计算角度误差
+        error_yaw = self.calculate_error_yaw(target_camera_yaw)
         
+        return distance < self.position_tolerance and abs(error_yaw) < self.yaw_tolerance
+    
     def control_callback(self):
-        """主控制循环"""
-        if not self.target_positions:
+        """控制回调函数"""
+        if not self.map_origin_set or not self.moving or self.sequence_completed:
             return
             
-        # 检查是否正在移动且等待时间已过
-        if self.moving and (time.time() - self.move_start_time) >= self.move_delay:
-            # 获取当前目标
-            current_target = self.target_positions[self.current_target_index]
+        # 检查移动延迟
+        if time.time() - self.move_start_time < self.move_delay:
+            return
             
-            # 检查是否到达目标
-            if self.is_position_reached(current_target):
-                self.moving = False
-                self.get_logger().info(f'Reached target {self.current_target_index + 1}: x={current_target.x:.3f}, y={current_target.y:.3f}')
-                self.cmd_vel_pub.publish(Twist())
+        # 检查是否还有目标点
+        if self.current_target_index >= len(self.target_positions):
+            self.sequence_completed = True
+            self.moving = False
+            self.get_logger().info('Navigation sequence completed!')
+            return
+            
+        # 获取当前目标
+        current_target = self.target_positions[self.current_target_index]
+        
+        # 检查是否到达当前目标
+        if self.is_position_reached(current_target):
+            self.get_logger().info(f'Reached waypoint {self.current_target_index + 1}: ({current_target[0]:.2f}, {current_target[1]:.2f})')
+            
+            # 删除已到达的marker
+            self.delete_waypoint_marker(self.current_target_index)
+            
+            self.current_target_index += 1
+            
+            # 停止移动，等待下一次shoot_btn信号
+            self.moving = False
+            
+            # 发布停止命令
+            cmd_vel = Twist()
+            self.cmd_vel_pub.publish(cmd_vel)
+            
+            # 更新marker显示下一个目标点
+            self.update_markers()
+            
+            if self.current_target_index >= len(self.target_positions):
+                self.sequence_completed = True
+                self.get_logger().info('Navigation sequence completed!')
             else:
-                # 计算控制命令
-                cmd_vel = self.compute_control_command(current_target)
-                self.cmd_vel_pub.publish(cmd_vel)
-                
-                # 计算到目标的距离和角度
-                dx = current_target.x - self.current_position.x
-                dy = current_target.y - self.current_position.y
-                distance = math.sqrt(dx*dx + dy*dy)
-                
-                if self.use_angular_control:
-                    error_yaw = self.calculate_error_yaw(current_target.z)
-                    self.get_logger().info(f'Moving to target {self.current_target_index + 1}: distance={distance:.3f}m, angle_diff={math.degrees(abs(error_yaw)):.2f}°', 
-                                         throttle_duration_sec=2.0)
-                else:
-                    self.get_logger().info(f'Moving to target {self.current_target_index + 1}: distance={distance:.3f}m', 
-                                         throttle_duration_sec=2.0)
+                self.get_logger().info('Waiting for next shoot_btn to continue...')
+            return
+        
+        # 计算控制命令
+        self.compute_control_command(current_target)
     
     def compute_control_command(self, target):
         """计算控制命令"""
+        # 将map坐标系下的目标点转换到camera_init坐标系
+        target_camera_x, target_camera_y, target_camera_yaw = self.transform_map_to_camera_init(target[0], target[1], target[2])
+        
+        # 计算位置误差（在camera_init坐标系下）
+        dx = target_camera_x - self.current_position.x
+        dy = target_camera_y - self.current_position.y
+        distance = math.sqrt(dx*dx + dy*dy)
+        
+        # 计算角度误差
+        error_yaw = self.calculate_error_yaw(target_camera_yaw)
+        
+        # 创建cmd_vel消息
         cmd_vel = Twist()
         
-        if not self.current_position:
-            return cmd_vel
-            
-        # 计算位置误差
-        dx = target.x - self.current_position.x
-        dy = target.y - self.current_position.y
+        # 线速度控制（基于距离，沿着camera_init的xy轴）
+        linear_vel_x = self.kp_linear * dx
+        linear_vel_y = self.kp_linear * dy
         
-        # 计算线速度（在机器人坐标系下）
-        # 将全局误差转换到机器人坐标系
-        cos_yaw = math.cos(self.current_position.z)
-        sin_yaw = math.sin(self.current_position.z)
+        # 限制线速度
+        linear_vel_x = max(-self.max_linear_vel, min(self.max_linear_vel, linear_vel_x))
+        linear_vel_y = max(-self.max_linear_vel, min(self.max_linear_vel, linear_vel_y))
         
-        # 机器人坐标系下的误差
-        robot_dx = dx * cos_yaw + dy * sin_yaw
-        robot_dy = -dx * sin_yaw + dy * cos_yaw
+        # 角速度控制（基于角度误差，只使用kp）
+        angular_vel = self.kp_angular * error_yaw
+        angular_vel = max(-self.max_angular_vel, min(self.max_angular_vel, angular_vel))
         
-        # 计算线速度
-        linear_x = self.kp_linear * robot_dx
-        linear_y = self.kp_linear * robot_dy
+        # 设置速度
+        cmd_vel.linear.x = linear_vel_x
+        cmd_vel.linear.y = linear_vel_y
+        cmd_vel.angular.z = angular_vel
         
-        # 限制线速度范围
-        linear_x = max(-self.max_linear_vel, min(self.max_linear_vel, linear_x))
-        linear_y = max(-self.max_linear_vel, min(self.max_linear_vel, linear_y))
+        # 发布控制命令
+        self.cmd_vel_pub.publish(cmd_vel)
         
-        # 根据是否使用角度控制来计算角速度
-        if self.use_angular_control:
-            # 计算角度误差（PID控制）
-            error_yaw = self.calculate_error_yaw(target.z)
-            angular_z = self.kp_angular * error_yaw + self.kd_angular * (error_yaw - self.last_error_yaw)
-            self.last_error_yaw = error_yaw
-            
-            # 限制角速度范围
-            angular_z = max(-self.max_angular_vel, min(self.max_angular_vel, angular_z))
-        else:
-            # 不控制角速度
-            angular_z = 0.0
-        
-        cmd_vel.linear.x = linear_x
-        cmd_vel.linear.y = linear_y
-        cmd_vel.linear.z = 0.0
-        cmd_vel.angular.x = 0.0
-        cmd_vel.angular.y = 0.0
-        cmd_vel.angular.z = angular_z
-        
-        return cmd_vel
-
-    def create_target_marker(self, position, marker_id, is_next_target=False):
-        """创建目标位置marker"""
+        # 输出调试信息
+        if self.current_target_index % 10 == 0:  # 每10次输出一次
+            self.get_logger().info(f'Target {self.current_target_index + 1}: distance={distance:.2f}m, angle_error={math.degrees(error_yaw):.1f}°')
+    
+    def create_waypoint_marker(self, position, marker_id, is_current_target=False):
+        """创建路径点标记"""
         marker = Marker()
         marker.header.frame_id = "camera_init"
         marker.header.stamp = self.get_clock().now().to_msg()
-        marker.ns = "target_positions"
+        marker.ns = "waypoints"
         marker.id = marker_id
         marker.type = Marker.ARROW
         marker.action = Marker.ADD
         
-        # 设置位置
-        marker.pose.position.x = position.x
-        marker.pose.position.y = position.y
+        marker.pose.position.x = position[0]
+        marker.pose.position.y = position[1]
         marker.pose.position.z = 0.0
         
-        # 设置方向（箭头指向yaw角度）
-        yaw = position.z
-        marker.pose.orientation.x = 0.0
-        marker.pose.orientation.y = 0.0
+        # 设置箭头方向（指向yaw角方向）
+        yaw = position[2]
         marker.pose.orientation.z = math.sin(yaw / 2.0)
         marker.pose.orientation.w = math.cos(yaw / 2.0)
         
-        # 设置大小
-        marker.scale.x = 0.5  # 箭头长度
-        marker.scale.y = 0.1  # 箭头宽度
-        marker.scale.z = 0.1  # 箭头高度
-        
-        # 设置颜色
-        if is_next_target:
-            # 下一个目标：红色
+        # 设置标记大小
+        if is_current_target:
+            marker.scale.x = 0.8  # 箭头长度
+            marker.scale.y = 0.3  # 箭头宽度
+            marker.scale.z = 0.3  # 箭头高度
+            # 当前目标为红色
             marker.color.r = 1.0
             marker.color.g = 0.0
             marker.color.b = 0.0
-            marker.color.a = 1.0
         else:
-            # 其他目标：蓝色
+            marker.scale.x = 0.6  # 箭头长度
+            marker.scale.y = 0.2  # 箭头宽度
+            marker.scale.z = 0.2  # 箭头高度
+            # 其他目标为蓝色
             marker.color.r = 0.0
             marker.color.g = 0.0
             marker.color.b = 1.0
-            marker.color.a = 0.7
-            
+        
+        marker.color.a = 1.0
         return marker
     
-
-    
-    def update_markers(self):
-        """更新marker可视化"""
-        if not self.target_positions:
-            return
-            
+    def delete_waypoint_marker(self, waypoint_index):
+        """删除指定的路径点marker"""
         marker_array = MarkerArray()
-        marker_id = 0
         
-        # 首先删除所有旧的marker
+        # 创建删除marker
         delete_marker = Marker()
         delete_marker.header.frame_id = "camera_init"
         delete_marker.header.stamp = self.get_clock().now().to_msg()
-        delete_marker.ns = "target_positions"
+        delete_marker.ns = "waypoints"
+        delete_marker.id = waypoint_index
+        delete_marker.action = Marker.DELETE
+        
+        marker_array.markers.append(delete_marker)
+        
+        # 发布删除命令
+        self.marker_pub.publish(marker_array)
+        
+        self.get_logger().info(f'Deleted waypoint marker {waypoint_index + 1}')
+    
+    def update_markers(self):
+        """更新路径点标记"""
+        if not self.map_origin_set:
+            self.get_logger().debug('Cannot update markers: map_origin not set')
+            return
+            
+        self.get_logger().debug('Updating markers...')
+        marker_array = MarkerArray()
+        
+        # 删除旧的标记
+        delete_marker = Marker()
+        delete_marker.header.frame_id = "camera_init"
+        delete_marker.header.stamp = self.get_clock().now().to_msg()
+        delete_marker.ns = "waypoints"
         delete_marker.action = Marker.DELETEALL
         marker_array.markers.append(delete_marker)
         
-        # 创建未来目标的marker
-        for i in range(self.current_target_index, len(self.target_positions)):
-            target = self.target_positions[i]
-            is_next_target = (i == self.current_target_index)
-            
-            # 创建箭头marker
-            arrow_marker = self.create_target_marker(target, marker_id, is_next_target)
-            marker_array.markers.append(arrow_marker)
-            marker_id += 1
+        # 创建路径点标记
+        for i, waypoint in enumerate(self.target_positions):
+            # 下一个目标点标红（不管是否在移动）
+            is_current = (i == self.current_target_index and not self.sequence_completed)
+            # 将map坐标系下的路径点转换到camera_init坐标系
+            waypoint_camera_x, waypoint_camera_y, _ = self.transform_map_to_camera_init(waypoint[0], waypoint[1], waypoint[2])
+            waypoint_camera = (waypoint_camera_x, waypoint_camera_y, waypoint[2])
+            marker = self.create_waypoint_marker(waypoint_camera, i, is_current)
+            marker_array.markers.append(marker)
         
-        # 发布marker数组
+        # 发布标记
         self.marker_pub.publish(marker_array)
+        
+        # 输出调试信息
+        # self.get_logger().info(f'Updated {len(self.target_positions)} waypoint markers')
 
 def main(args=None):
     rclpy.init(args=args)
-    node = PositionController()
+    node = MultiPointPositionController()
     
     try:
         rclpy.spin(node)
