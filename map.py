@@ -239,9 +239,9 @@ class OdomToMapConverter(Node):
         # 初始化PID控制器
         if not self.visual_pose_set:
             self.pid_controller = AdvancedPIDController(
-                kp=5.0, ki=0.2, kd=0.1,
+                kp=5.0, ki=1.0, kd=0.1,
                 output_min=-2.2, output_max=2.2,
-                integral_min=-0.5, integral_max=0.5,
+                integral_min=-0.1, integral_max=0.1,
                 sample_time=0.05
             )
         else:
@@ -258,7 +258,7 @@ class OdomToMapConverter(Node):
         self.x_visual = 0.0
         self.y_visual = 0.0
         self.z_visual = 0.0
-        self.offset = 0.35
+        self.offset = 0.15
         self.delta_offset = 0.0
         self.last_rpm_value = 0.0
         self.x_seg_low = 2.6
@@ -421,6 +421,7 @@ class OdomToMapConverter(Node):
         # 使用PID控制器计算输出
         # 使用PID控制器计算输出
         output, p_term, i_term, d_term = self.pid_controller.compute(error_yaw)
+        self.get_logger().info(f'p_term: {p_term:.2f}, i_term: {i_term:.2f}, d_term: {d_term:.2f}',throttle_duration_sec=0.5)
         
         # 创建cmd_vel消息
         cmd_vel = Twist()
@@ -474,19 +475,14 @@ class OdomToMapConverter(Node):
             
             rpm_msg = Vector3()
             rpm_msg.x = rpm_value
-            rpm_msg.y = rpm_value+self.rpm_offset_y
+            rpm_msg.y = rpm_value
             rpm_msg.z = rpm_value
             self.rpm_pub.publish(rpm_msg)
             self.has_goal = False
 
     def calculate_rpm(self, x):
         """计算RPM值，使用delta_offset"""
-        if x > self.x_seg_low and x < self.x_seg_high:
-            RPM = -54.428954 * x**2 + 860.393555 * x + 29.221919
-            print('use quad')
-        else:
-            RPM = 430.9047619047621 * (x) + 809.6428571428569  
-            print('use linear')
+        RPM = 450*x+571.67
         return RPM
 
     def initialpose_callback(self, msg):
