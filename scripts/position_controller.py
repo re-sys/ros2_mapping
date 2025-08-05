@@ -30,27 +30,31 @@ class MultiPointPositionController(Node):
         # 移动控制参数
         self.moving = False  # 是否正在移动
         self.move_start_time = 0.0  # 移动开始时间
-        self.move_delay = 1.0  # shoot_btn后等待时间
+        self.move_delay = 0.0  # shoot_btn后等待时间
         self.sequence_completed = False  # 序列是否完成
         
         # 控制参数
-        self.kp_linear = 2.0  # 线速度比例系数
-        self.max_linear_vel = 3.0  # 最大线速度
+        self.kp_linear = 3.0  # 线速度比例系数
+        self.max_linear_vel = 1.5  # 最大线速度
         
         # 角度控制参数
         self.kp_angular = 2.0  # 角速度比例系数
-        self.max_angular_vel = 2.2  # 最大角速度
+        self.max_angular_vel = 1.0  # 最大角速度
         
         # 控制模式选择
         self.use_global_control = False  # True: 全局控制底盘, False: 局部控制底盘
         
+        # 文件保存路径 - 使用当前Python文件所在目录
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        self.waypoints_file = os.path.join(current_dir, "saved_waypoints.yaml")
+        
         # 预定义的目标点位（在initialpose坐标系下）
         self.waypoints = [
-            (2.0, 0.0, 0.0),    # 前方2m
-            (4.0, 2.0, 0.0),    # 右前方
-            (4.0, -2.0, 0.0),   # 左前方
-            (6.0, 0.0, 0.0),    # 前方6m
-            (2.0, 0.0, 0.0),    # 回到前方2m
+            # (2.0, 0.0, 0.0),    # 前方2m
+            # (4.0, 2.0, 0.0),    # 右前方
+            # (4.0, -2.0, 0.0),   # 左前方
+            # (6.0, 0.0, 0.0),    # 前方6m
+            # (2.0, 0.0, 0.0),    # 回到前方2m
         ]
         
         # 订阅者
@@ -84,6 +88,28 @@ class MultiPointPositionController(Node):
             10
         )
         
+        # 订阅保存/加载命令话题
+        self.save_cmd_sub = self.create_subscription(
+            Bool,
+            '/save_waypoints',
+            self.save_waypoints_callback,
+            10
+        )
+        
+        self.load_cmd_sub = self.create_subscription(
+            Bool,
+            '/load_waypoints',
+            self.load_waypoints_callback,
+            10
+        )
+        
+        self.clear_cmd_sub = self.create_subscription(
+            Bool,
+            '/clear_waypoints',
+            self.clear_waypoints_callback,
+            10
+        )
+        
         # 发布者
         self.cmd_vel_pub = self.create_publisher(
             Twist,
@@ -108,6 +134,11 @@ class MultiPointPositionController(Node):
         self.get_logger().info(f'Waypoints: {len(self.waypoints)} points')
         control_mode = "Global" if self.use_global_control else "Local"
         self.get_logger().info(f'Control mode: {control_mode}')
+        self.get_logger().info(f'Waypoints file path: {self.waypoints_file}')
+        
+        # 尝试加载已保存的路径点
+        self.load_waypoints()
+        
         self.get_logger().info('Waiting for initialpose to start...')
         
     def initialpose_callback(self, msg):
@@ -210,6 +241,102 @@ class MultiPointPositionController(Node):
         yaw = math.atan2(siny_cosp, cosy_cosp)
         return yaw
     
+    def save_waypoints(self):
+        """保存当前的目标点位到文件"""
+        try:
+            waypoints_data = {
+                'waypoints': []
+            }
+            
+            for i, waypoint in enumerate(self.target_positions):
+                waypoint_data = {
+                    'id': i,
+                    'x': waypoint[0],
+                    'y': waypoint[1],
+                    'yaw': waypoint[2]
+                }
+                waypoints_data['waypoints'].append(waypoint_data)
+            
+            with open(self.waypoints_file, 'w') as f:
+                yaml.dump(waypoints_data, f, default_flow_style=False)
+            
+            self.get_logger().info(f'Saved {len(self.target_positions)} waypoints to {self.waypoints_file}')
+            return True
+            
+        except Exception as e:
+            self.get_logger().error(f'Failed to save waypoints: {str(e)}')
+            return False
+    
+    def load_waypoints(self):
+        """从文件加载目标点位"""
+        try:
+            if not os.path.exists(self.waypoints_file):
+                self.get_logger().info(f'No saved waypoints file found: {self.waypoints_file}')
+                return False
+            
+            with open(self.waypoints_file, 'r') as f:
+                waypoints_data = yaml.safe_load(f)
+            
+            loaded_waypoints = []
+            for waypoint_data in waypoints_data.get('waypoints', []):
+                x = waypoint_data.get('x', 0.0)
+                y = waypoint_data.get('y', 0.0)
+                yaw = waypoint_data.get('yaw', 0.0)
+                loaded_waypoints.append((x, y, yaw))
+            
+            self.target_positions = loaded_waypoints
+            self.current_target_index = 0
+            self.get_logger().info(f'Loaded {len(self.target_positions)} waypoints from {self.waypoints_file}')
+            
+            # 更新marker显示
+            if self.map_origin_set:
+                self.update_markers()
+            
+            return True
+            
+        except Exception as e:
+            self.get_logger().error(f'Failed to load waypoints: {str(e)}')
+            return False
+    
+    def clear_waypoints(self):
+        """清空所有目标点位"""
+        self.target_positions = []
+        self.current_target_index = 0
+        self.sequence_completed = False
+        self.moving = False
+        
+        # 发布停止命令
+        cmd_vel = Twist()
+        self.cmd_vel_pub.publish(cmd_vel)
+        
+        # 更新marker显示
+        if self.map_origin_set:
+            self.update_markers()
+        
+        self.get_logger().info('All waypoints cleared')
+    
+    def save_waypoints_callback(self, msg):
+        """处理保存命令"""
+        if msg.data:
+            if self.save_waypoints():
+                self.get_logger().info('Waypoints saved successfully')
+            else:
+                self.get_logger().error('Failed to save waypoints')
+    
+    def load_waypoints_callback(self, msg):
+        """处理加载命令"""
+        if msg.data:
+            if self.load_waypoints():
+                self.get_logger().info('Waypoints loaded successfully')
+            else:
+                self.get_logger().error('Failed to load waypoints')
+    
+    def clear_waypoints_callback(self, msg):
+        """处理清空命令"""
+        if msg.data:
+            self.clear_waypoints()
+            self.get_logger().info('Waypoints cleared successfully')
+    
     def shoot_btn_callback(self, msg):
         """处理shoot_btn消息，移动到下一个目标点"""
         if not self.map_origin_set:
@@ -218,13 +345,18 @@ class MultiPointPositionController(Node):
             
         if msg.data:
             if self.sequence_completed:
-                # 重置序列
-                self.current_target_index = 0
-                self.sequence_completed = False
-                self.moving = False
-                self.get_logger().info('Navigation sequence reset')
-                # 更新marker显示所有目标点
-                self.update_markers()
+                # 检查是否有目标点
+                if len(self.target_positions) == 0:
+                    self.get_logger().info('No waypoints available')
+                elif self.current_target_index >= len(self.target_positions):
+                    self.get_logger().info('No more waypoints to visit')
+                else:
+                    # 有目标点且索引有效，直接开始移动到当前目标点
+                    self.sequence_completed = False
+                    self.moving = True
+                    self.move_start_time = time.time()
+                    current_target = self.target_positions[self.current_target_index]
+                    self.get_logger().info(f'Starting navigation to waypoint {self.current_target_index + 1}: ({current_target[0]:.2f}, {current_target[1]:.2f})')
             else:
                 # 移动到下一个目标点
                 if self.current_target_index < len(self.target_positions):
@@ -253,12 +385,18 @@ class MultiPointPositionController(Node):
         new_waypoint = (map_x, map_y, map_yaw)
         self.target_positions.append(new_waypoint)
         
+        # 如果序列已完成，将当前目标索引设置为新添加的目标点
+        if self.sequence_completed:
+            self.current_target_index = len(self.target_positions) - 1  # 设置为新添加的目标点
+            self.sequence_completed = False
+            self.get_logger().info('Sequence was completed, new waypoint will be the next target')
+        
         # 打印坐标信息
         self.get_logger().info(f'Added new waypoint:')
         self.get_logger().info(f'  Camera_init coordinates: x={goal_x:.3f}, y={goal_y:.3f}, yaw={math.degrees(goal_yaw):.2f}°')
         self.get_logger().info(f'  Map coordinates: x={map_x:.3f}, y={map_y:.3f}, yaw={math.degrees(map_yaw):.2f}°')
-        self.get_logger().info(f'  transformed_map_x={self.transform_params[0]:.3f}, y={self.transform_params[1]:.3f}, yaw={math.degrees(self.transform_params[2]):.2f}°')
         self.get_logger().info(f'Total waypoints: {len(self.target_positions)}')
+        self.get_logger().info(f'Current target index: {self.current_target_index}')
         
         # 更新marker显示
         self.update_markers()

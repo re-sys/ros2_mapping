@@ -39,7 +39,7 @@ class MapBoundaryPublisher(Node):
         )
         
         # 边界参数 - 类似篮球场布局
-        self.x_offset = 0.6  # 整体向x轴负方向偏移距离
+        self.x_offset = 0.975  # 整体向x轴负方向偏移距离
         self.y_length = 8.0  # Y轴方向长边：-4到4m
         self.x_length = 15.0   # X轴方向短边：0到15m
         
@@ -49,13 +49,13 @@ class MapBoundaryPublisher(Node):
         self.inner_rect_center_x = -self.x_offset+self.inner_rect_length/2  # 小矩形中心x坐标
         
         # 外围边界参数
-        self.straight_line_length = 0.9  # 直线段长度
-        self.arc_radius = 3.4  # 半圆弧半径
+        self.straight_line_length = 0.975  # 直线段长度
+        self.arc_radius = 3.1  # 半圆弧半径
         
         # 篮筐和篮板参数
         self.basket_radius = 0.225  # 篮筐半径
         self.backboard_length = 1.8  # 篮板长度
-        self.backboard_offset = 0.3  # 篮板中心距离原点的偏移（负x方向）
+        self.backboard_offset = 0.375  # 篮板中心距离原点的偏移（负x方向）
         
         
         self.get_logger().info('Map边界发布器已启动')
@@ -279,7 +279,7 @@ class MapBoundaryPublisher(Node):
             main_line_marker.points.append(point)
         
         # 设置主边界线的样式（白色）
-        main_line_marker.scale.x = 0.1  # 线宽
+        main_line_marker.scale.x = 0.05  # 线宽
         main_line_marker.color = ColorRGBA()
         main_line_marker.color.r = 1.0
         main_line_marker.color.g = 1.0
@@ -316,7 +316,7 @@ class MapBoundaryPublisher(Node):
             inner_line_marker.points.append(point)
         
         # 设置内嵌矩形的样式（白色）
-        inner_line_marker.scale.x = 0.1  # 线宽
+        inner_line_marker.scale.x = 0.05  # 线宽
         inner_line_marker.color = ColorRGBA()
         inner_line_marker.color.r = 1.0
         inner_line_marker.color.g = 1.0
@@ -345,7 +345,7 @@ class MapBoundaryPublisher(Node):
             outer_line_marker.points.append(point)
         
         # 设置外围边界的样式（白色）
-        outer_line_marker.scale.x = 0.1  # 线宽
+        outer_line_marker.scale.x = 0.05  # 线宽
         outer_line_marker.color = ColorRGBA()
         outer_line_marker.color.r = 1.0
         outer_line_marker.color.g = 1.0
@@ -402,10 +402,10 @@ class MapBoundaryPublisher(Node):
             backboard_marker.points.append(point)
         
         # 设置篮板的样式（蓝色，较粗）
-        backboard_marker.scale.x = 0.15  # 线宽
+        backboard_marker.scale.x = 0.05  # 线宽
         backboard_marker.color = ColorRGBA()
-        backboard_marker.color.r = 0.0
-        backboard_marker.color.g = 0.0
+        backboard_marker.color.r = 1.0
+        backboard_marker.color.g = 1.0
         backboard_marker.color.b = 1.0
         backboard_marker.color.a = 1.0
         
