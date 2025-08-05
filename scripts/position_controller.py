@@ -2,23 +2,17 @@
 
 import rclpy
 from rclpy.node import Node
-from geometry_msgs.msg import Vector3, PoseStamped, Twist, PoseArray
-from geometry_msgs.msg import Vector3, PoseStamped, Twist, PoseArray
+from geometry_msgs.msg import Vector3, PoseStamped, Twist, PoseArray, PoseWithCovarianceStamped
 from std_msgs.msg import Bool
 from visualization_msgs.msg import Marker, MarkerArray
 from nav_msgs.msg import Odometry
-from geometry_msgs.msg import PoseWithCovarianceStamped
-from nav_msgs.msg import Odometry
-from geometry_msgs.msg import PoseWithCovarianceStamped
 import yaml
 import math
 import os
 import time
 
 class MultiPointPositionController(Node):
-class MultiPointPositionController(Node):
     def __init__(self):
-        super().__init__('multi_point_position_controller')
         super().__init__('multi_point_position_controller')
         
         # 初始化参数
@@ -38,18 +32,17 @@ class MultiPointPositionController(Node):
         self.move_start_time = 0.0  # 移动开始时间
         self.move_delay = 1.0  # shoot_btn后等待时间
         self.sequence_completed = False  # 序列是否完成
-        self.sequence_completed = False  # 序列是否完成
         
         # 控制参数
         self.kp_linear = 2.0  # 线速度比例系数
-        self.max_linear_vel = 1.5  # 最大线速度
+        self.max_linear_vel = 3.0  # 最大线速度
         
         # 角度控制参数
         self.kp_angular = 2.0  # 角速度比例系数
         self.max_angular_vel = 2.2  # 最大角速度
         
         # 控制模式选择
-        self.use_global_control = True  # True: 全局控制底盘, False: 局部控制底盘
+        self.use_global_control = False  # True: 全局控制底盘, False: 局部控制底盘
         
         # 预定义的目标点位（在initialpose坐标系下）
         self.waypoints = [
@@ -101,7 +94,6 @@ class MultiPointPositionController(Node):
         # Marker发布者
         self.marker_pub = self.create_publisher(
             MarkerArray,
-            '/waypoint_markers',
             '/waypoint_markers',
             10
         )
@@ -231,6 +223,8 @@ class MultiPointPositionController(Node):
                 self.sequence_completed = False
                 self.moving = False
                 self.get_logger().info('Navigation sequence reset')
+                # 更新marker显示所有目标点
+                self.update_markers()
             else:
                 # 移动到下一个目标点
                 if self.current_target_index < len(self.target_positions):
@@ -271,17 +265,11 @@ class MultiPointPositionController(Node):
     
     def calculate_error_yaw(self, target_yaw):
         """计算角度误差"""
-        """计算角度误差"""
         current_yaw = self.current_position.z
-        target_yaw = target_yaw
-        target_yaw = target_yaw
         
         # 处理角度跨越±π的情况
         while current_yaw - target_yaw > math.pi:
-        # 处理角度跨越±π的情况
-        while current_yaw - target_yaw > math.pi:
             current_yaw -= 2 * math.pi
-        while current_yaw - target_yaw < -math.pi:
         while current_yaw - target_yaw < -math.pi:
             current_yaw += 2 * math.pi
             
@@ -316,19 +304,6 @@ class MultiPointPositionController(Node):
             self.sequence_completed = True
             self.moving = False
             self.get_logger().info('Navigation sequence completed!')
-        """控制回调函数"""
-        if not self.map_origin_set or not self.moving or self.sequence_completed:
-            return
-            
-        # 检查移动延迟
-        if time.time() - self.move_start_time < self.move_delay:
-            return
-            
-        # 检查是否还有目标点
-        if self.current_target_index >= len(self.target_positions):
-            self.sequence_completed = True
-            self.moving = False
-            self.get_logger().info('Navigation sequence completed!')
             return
             
         # 获取当前目标
@@ -337,9 +312,6 @@ class MultiPointPositionController(Node):
         # 检查是否到达当前目标
         if self.is_position_reached(current_target):
             self.get_logger().info(f'Reached waypoint {self.current_target_index + 1}: ({current_target[0]:.2f}, {current_target[1]:.2f})')
-            
-            # 删除已到达的marker
-            self.delete_waypoint_marker(self.current_target_index)
             
             self.current_target_index += 1
             
@@ -350,7 +322,7 @@ class MultiPointPositionController(Node):
             cmd_vel = Twist()
             self.cmd_vel_pub.publish(cmd_vel)
             
-            # 更新marker显示下一个目标点
+            # 更新marker显示下一个目标点（会自动移除已到达的目标点）
             self.update_markers()
             
             if self.current_target_index >= len(self.target_positions):
@@ -367,6 +339,7 @@ class MultiPointPositionController(Node):
         """计算控制命令"""
         # 将map坐标系下的目标点转换到camera_init坐标系
         target_camera_x, target_camera_y, target_camera_yaw = self.transform_map_to_camera_init(target[0], target[1], target[2])
+        self.get_logger().info(f'target_camera_x={target_camera_x:.3f}, y={target_camera_y:.3f}, yaw={math.degrees(target_camera_yaw):.2f}°',throttle_duration_sec=1.0)
         
         # 计算位置误差（在camera_init坐标系下）
         dx = target_camera_x - self.current_position.x
@@ -435,13 +408,10 @@ class MultiPointPositionController(Node):
         marker.header.frame_id = "camera_init"
         marker.header.stamp = self.get_clock().now().to_msg()
         marker.ns = "waypoints"
-        marker.ns = "waypoints"
         marker.id = marker_id
-        marker.type = Marker.SPHERE
+        marker.type = Marker.ARROW
         marker.action = Marker.ADD
         
-        marker.pose.position.x = position[0]
-        marker.pose.position.y = position[1]
         marker.pose.position.x = position[0]
         marker.pose.position.y = position[1]
         marker.pose.position.z = 0.0
@@ -468,8 +438,6 @@ class MultiPointPositionController(Node):
             marker.color.r = 0.0
             marker.color.g = 0.0
             marker.color.b = 1.0
-        
-        marker.color.a = 1.0
         
         marker.color.a = 1.0
         return marker
@@ -503,35 +471,37 @@ class MultiPointPositionController(Node):
         marker_array = MarkerArray()
         
         # 删除旧的标记
-        # 删除旧的标记
         delete_marker = Marker()
         delete_marker.header.frame_id = "camera_init"
         delete_marker.header.stamp = self.get_clock().now().to_msg()
         delete_marker.ns = "waypoints"
-        delete_marker.ns = "waypoints"
         delete_marker.action = Marker.DELETEALL
         marker_array.markers.append(delete_marker)
         
-        # 创建路径点标记
+        # 只创建未到达的路径点标记
         for i, waypoint in enumerate(self.target_positions):
+            # 跳过已经到达的目标点
+            if i < self.current_target_index:
+                continue
+                
             # 下一个目标点标红（不管是否在移动）
             is_current = (i == self.current_target_index and not self.sequence_completed)
             # 将map坐标系下的路径点转换到camera_init坐标系
-            waypoint_camera_x, waypoint_camera_y, _ = self.transform_map_to_camera_init(waypoint[0], waypoint[1], waypoint[2])
-            waypoint_camera = (waypoint_camera_x, waypoint_camera_y, waypoint[2])
-            marker = self.create_waypoint_marker(waypoint_camera, i, is_current)
+            waypoint_camera_x, waypoint_camera_y, waypoint_camera_yaw = self.transform_map_to_camera_init(waypoint[0], waypoint[1], waypoint[2])
+            waypoint_camera = (waypoint_camera_x, waypoint_camera_y, waypoint_camera_yaw)
+            # 使用相对索引作为marker ID，确保ID连续
+            marker = self.create_waypoint_marker(waypoint_camera, i - self.current_target_index, is_current)
             marker_array.markers.append(marker)
         
-        # 发布标记
         # 发布标记
         self.marker_pub.publish(marker_array)
         
         # 输出调试信息
-        # self.get_logger().info(f'Updated {len(self.target_positions)} waypoint markers')
+        remaining_waypoints = len(self.target_positions) - self.current_target_index
+        self.get_logger().debug(f'Updated {remaining_waypoints} remaining waypoint markers')
 
 def main(args=None):
     rclpy.init(args=args)
-    node = MultiPointPositionController()
     node = MultiPointPositionController()
     
     try:

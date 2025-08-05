@@ -27,8 +27,7 @@ class RobotSimulator(Node):
         self.max_angular_vel = 3.0  # 最大角速度 rad/s
         
         # 控制模式标志
-        self.declare_parameter('global_control_mode', True)
-        self.global_control_mode = self.get_parameter('global_control_mode').value  # True: 全局控制模式, False: 局部控制模式
+        self.global_control_mode = False  # True: 全局控制模式, False: 局部控制模式
         
         # 订阅cmd_vel话题
         self.cmd_vel_sub = self.create_subscription(
