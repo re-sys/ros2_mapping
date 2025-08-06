@@ -239,9 +239,9 @@ class OdomToMapConverter(Node):
         # 初始化PID控制器
         if not self.visual_pose_set:
             self.pid_controller = AdvancedPIDController(
-                kp=5.0, ki=1.0, kd=0.1,
+                kp=3.0, ki=2.0, kd=0.05,
                 output_min=-1.8, output_max=1.8,
-                integral_min=-0.1, integral_max=0.1,
+                integral_min=-0.05, integral_max=0.05,
                 sample_time=0.05
             )
         else:
