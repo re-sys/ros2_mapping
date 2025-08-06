@@ -109,6 +109,9 @@ class AdvancedPIDController:
             if self.anti_windup:
                 self.integral = max(self.integral_min, min(self.integral_max, self.integral))
         i_term = self.ki * self.integral
+        if i_term * p_term <0:
+            self.integral=0
+            i_term=0
         
         # 微分项
         if dt > 0:
@@ -262,11 +265,11 @@ class OdomToMapConverter(Node):
         self.delta_offset = 0.0
         self.last_rpm_value = 0.0
         self.x_seg_low = 2.6
-        self.x_seg_high = 3.5
+        # self.x_seg_high = 3.5
         self.tol = 0.01
         self.left_reach_times = 3  # 改为left_reach_times形式
         self.check_max_times = 10
-        
+        print('======================================================================')
         # 初始化目标位姿
         self.goal_yaw = 0.0
         self.has_goal = False
@@ -383,7 +386,7 @@ class OdomToMapConverter(Node):
                 # 直接发射模式：不转动，直接设置RPM为1500
                 rpm_msg = Vector3()
                 rpm_msg.x = 0.0
-                rpm_msg.y = 0.0+self.rpm_offset_y
+                rpm_msg.y = 0.0
                 rpm_msg.z = 0.0
                 self.rpm_pub.publish(rpm_msg)
                 return
@@ -464,7 +467,7 @@ class OdomToMapConverter(Node):
             else:
                 distance = self.coord_transformer.get_distance_to_origin()
 
-            if distance > 6.0:
+            if distance > 7.0:
                 self.get_logger().info('Distance too far!')
                 self.has_goal = False
                 return
@@ -482,7 +485,7 @@ class OdomToMapConverter(Node):
 
     def calculate_rpm(self, x):
         """计算RPM值，使用delta_offset"""
-        RPM = 450*x+571.67
+        RPM = 457.6*x+549.63
         return RPM
 
     def initialpose_callback(self, msg):
