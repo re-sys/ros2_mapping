@@ -269,11 +269,14 @@ class OdomToMapConverter(Node):
         self.tol = 0.01
         self.left_reach_times = 3  # 改为left_reach_times形式
         self.check_max_times = 10
-        print('======================================================================')
         # 初始化目标位姿
         self.goal_yaw = 0.0
         self.has_goal = False
         self.target_goal_offset = 0.0  # 目标角度偏置
+        
+        # 添加user_mode相关变量
+        self.user_mode = False  # 用户模式，默认为False
+        self.last_target_distance = None  # 上一次目标到达时的距离
         
         # 订阅话题
         self.distance_offset_sub = self.create_subscription(
@@ -377,7 +380,6 @@ class OdomToMapConverter(Node):
         """处理shoot_btn消息，设置目标角度"""
         if msg.data:  # 当收到true时
             # 计算当前距离
-            
             distance = self.coord_transformer.get_distance_to_origin()
             
             # 检查是否在直接发射模式范围内
@@ -390,6 +392,19 @@ class OdomToMapConverter(Node):
                 rpm_msg.z = 0.0
                 self.rpm_pub.publish(rpm_msg)
                 return
+            
+            # 判断user_mode
+            if self.last_target_distance is not None:
+                distance_diff = abs(distance - self.last_target_distance)
+                if distance_diff < 0.07:
+                    self.user_mode = True
+                    self.get_logger().info(f'User mode enabled! Distance difference: {distance_diff:.3f}m < 0.07m')
+                else:
+                    self.user_mode = False
+                    self.get_logger().info(f'User mode disabled! Distance difference: {distance_diff:.3f}m >= 0.07m')
+            else:
+                self.user_mode = False
+                self.get_logger().info('User mode disabled! No previous target distance')
             
             # 正常模式：将当前goal_pose的角度设为目标
             self.get_goal()
@@ -448,6 +463,32 @@ class OdomToMapConverter(Node):
         else:
             error_yaw = self.calculate_error_yaw()
         
+        # 用户模式检查：如果user_mode为true且yaw角差距小于0.05，直接发射
+        if self.user_mode and abs(error_yaw) < 0.05:
+            self.get_logger().info(f'User mode: Direct shoot! Yaw error: {error_yaw:.3f} < 0.05')
+            # 计算到map原点的距离并发布RPM值
+            if self.visual_pose_set:
+                distance = self.z_visual
+            else:
+                distance = self.coord_transformer.get_distance_to_origin()
+
+            if distance > 7.0:
+                self.get_logger().info('Distance too far!')
+                self.has_goal = False
+                return
+                
+            # 使用delta_offset而不是offset
+            rpm_value = self.calculate_rpm(distance + self.offset + self.delta_offset)
+            self.get_logger().info(f'User mode: Using calculated RPM: {rpm_value} for distance: {distance:.2f}m')
+            
+            rpm_msg = Vector3()
+            rpm_msg.x = rpm_value
+            rpm_msg.y = rpm_value
+            rpm_msg.z = rpm_value
+            self.rpm_pub.publish(rpm_msg)
+            self.has_goal = False
+            return
+        
         if abs(error_yaw) < self.tol:
             self.left_reach_times -= 1
             self.cmd_vel_pub.publish(Twist())
@@ -475,6 +516,9 @@ class OdomToMapConverter(Node):
             # 使用delta_offset而不是offset
             rpm_value = self.calculate_rpm(distance + self.offset + self.delta_offset)
             self.get_logger().info(f'Using calculated RPM: {rpm_value} for distance: {distance:.2f}m')
+            
+            # 更新last_target_distance
+            self.last_target_distance = distance
             
             rpm_msg = Vector3()
             rpm_msg.x = rpm_value
