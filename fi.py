@@ -18,8 +18,8 @@ class PointCloudFilterSimple(Node):
         super().__init__('pointcloud_filter_simple')
         
         # 滤波参数
-        self.z_min = 1.15  # z轴最小值 (米)
-        self.z_max = 1.4  # z轴最大值 (米)
+        self.z_min = 0.0  # z轴最小值 (米)
+        self.z_max = 1.0  # z轴最大值 (米)
         
         # 订阅FAST-LIO的点云话题
         self.pointcloud_sub = self.create_subscription(

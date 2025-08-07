@@ -6,7 +6,7 @@
 build/
 install/
 log/
-
+point_lio/Log
 # CMake generated files
 CMakeCache.txt
 CMakeFiles/
